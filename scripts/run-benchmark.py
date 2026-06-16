@@ -7,7 +7,9 @@ For each query in queries/queries.json, the driver:
      shape (pure index+scan) and its SELECT * LIMIT 100 shape (`*_rows`
      templates; adds row materialization/transfer, may terminate early),
   3. records server-side latency,
-  4. reports p50 / p95 / p99 (median of cold runs) per backend.
+  4. reports p50 / p95 / p99 across all runs per backend (the OS page cache is
+     dropped once before run 1, so run 1 is cold and the rest are hot; the
+     result page splits these into Cold/Hot, but these percentiles span both).
 
 Needle values (a real trace_id / span_id / request id / pod) are embedded in
 queries/queries.json so every backend and every machine runs the same query
@@ -367,8 +369,10 @@ def machine_info():
 
 
 def drop_os_page_cache():
-    """Drop the local OS page cache so each measured run is a genuine cold read
-    (driver and server share the host). Needs sudo. macOS: `sudo purge`.
+    """Drop the local OS page cache so the next run is a genuine cold read
+    (driver and server share the host). Called once per query variant, so only
+    the first of the following runs is cold; the rest read from a warm page
+    cache. Needs sudo. macOS: `sudo purge`.
     Linux: `sync` then write 3 to /proc/sys/vm/drop_caches."""
     import platform
 
@@ -400,7 +404,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--target", choices=["both", "openobserve", "clickhouse"], default="both")
     ap.add_argument("--queries", default="queries/queries.json")
-    ap.add_argument("--runs", type=int, default=5, help="cold-cache runs per query")
+    ap.add_argument("--runs", type=int, default=5,
+                    help="runs per query (1 cold + N-1 hot; page cache dropped once before run 1)")
     ap.add_argument("--out", default="results/summary.md")
     # OpenObserve
     ap.add_argument("--o2-url", default="http://localhost:5080")
@@ -559,7 +564,7 @@ def build_combined_report(results_dir, out_path, ingest_stats_path=None):
     L.append(f"- backends measured: **{', '.join(names)}**"
              + ("  _(isolated runs — only one server up at a time)_"
                 if len(names) == 2 else ""))
-    L.append(f"- runs per query (cold cache): **{meta['runs']}**")
+    L.append(f"- runs per query (1 cold + rest hot; page cache dropped once): **{meta['runs']}**")
     L.append(f"- table / stream: `{meta['table']}`")
     L.append("- OS page-cache dropped at each query start: **True**")
     if machine:

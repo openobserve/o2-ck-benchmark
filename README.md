@@ -10,36 +10,27 @@ Evaluate how each system performs under realistic observability workloads and
 help decide which backend fits a given use case. We measure both systems on the
 same hardware, the same datasets, and equivalent queries.
 
-## Methodology — why we measure cold cache
+## Methodology — cold vs hot, measured side by side
 
-Every query is measured **cold**: before each run the runner drops the OS page
-cache and bypasses each engine's internal caches, then runs the query five times.
+We report **both** a cold and a hot number per query, ClickBench-style. The driver
+([`scripts/run-benchmark.py`](scripts/run-benchmark.py)) drops the OS page cache
+**once**, then runs the query five times — so sample 1 is **cold** (nothing in RAM)
+and 2–5 are **hot** (data now page-cached). [`index.html`](index.html) has
+**Cold Run** / **Hot Run** toggles; the default blends them (`0.25·cold + 0.75·hot`).
 
-This is the only fair way to compare the two. ClickHouse leans heavily on
-caching: a query that takes **~1 s cold** drops to **~50 ms** when you repeat it
-within a minute — and then climbs back to ~1 s once the cache ages out. That warm
-50 ms isn't ClickHouse re-running the search; it's reading the previous result's
-data straight out of RAM. It behaves almost like a result cache. OpenObserve, by
-contrast, returns a **stable** number whether you run it once or ten times,
-because what we report is its actual search runtime.
+- **Cold** = a new search over data not in RAM — what incident investigation hits.
+- **Hot** = steady state once page-cached. ClickHouse gains a lot here (**~1 s →
+  ~50 ms**, reading the prior run's data from RAM); OpenObserve moves much less. That
+  spread is a useful signal, so we surface it rather than hide it.
 
-So if we let ClickHouse run warm, we'd be comparing *ClickHouse's cache* against
-*OpenObserve's search engine* — which flatters ClickHouse and tells you nothing
-about real query work. An analyst investigating an incident is almost always
-running a **new** search over data that isn't already hot in RAM; cold is what
-that feels like. We therefore force both engines cold so the numbers reflect
-search work, not cache residency.
+Both states stay apples-to-apples: each engine's own *result* cache is off per
+request, so we always measure search + IO, never a cached result. ClickHouse also
+drops its mark / uncompressed / query-condition caches and disables the query and
+filesystem caches; OpenObserve sets `use_cache: false`.
 
-Concretely, per run the driver ([`scripts/run-benchmark.py`](scripts/run-benchmark.py)):
-
-- drops the OS page cache (`sudo purge` on macOS; `sync` + `drop_caches` on Linux);
-- **ClickHouse** — drops the mark / uncompressed / query-condition caches and
-  disables the query cache and filesystem cache per request;
-- **OpenObserve** — sets `use_cache: false` per request (its result cache).
-
-If you want warm steady-state numbers too, run the same query repeatedly without
-the cache drop and report it **separately** — never mix a warm engine against a
-cold one.
+> `results/summary.md` reports median/p50 across all five runs, so it tracks the
+> **hot** number for most queries — use the toggles on [`index.html`](index.html)
+> to separate the two cleanly.
 
 ## Repository
 
@@ -48,7 +39,7 @@ cold one.
 | [`datagen/`](datagen/) | Rust log generator — writes byte-identical batches to OpenObserve and/or ClickHouse ([details](datagen/README.md)) |
 | [`schemas/clickhouse.sql`](schemas/clickhouse.sql) | ClickHouse table + indexes — `bloom_filter` on `trace_id`/`span_id`/`kubernetes_pod_name` and a full-text `text()` index on `message`, mirroring OpenObserve one-for-one. `ORDER BY (_timestamp)` only (time-ordered like OO; no structured column in the sort-key prefix, so neither engine gets a layout edge). |
 | [`queries/queries.json`](queries/queries.json) | Two workloads. **Needle queries** (q0–q7) with fixed ids/tokens embedded directly in each SQL template, in each system's SQL dialect — each in two shapes: `count()` (pure index+scan) and `SELECT * ... ORDER BY _timestamp DESC LIMIT 100` (row-fetch UX). q0/q1/q7 are exact-match id/pod lookups through each engine's skip index; q2/q3/q5/q6 are text-token searches through each engine's FTS index (OpenObserve `match_all`, ClickHouse `hasAnyTokens`); q4 combines a structured filter with a trace_id lookup. **Aggregation queries** (q8–q10, `category: "aggregation"`): histogram, top-N, and filtered histogram — full-range `GROUP BY` work that exercises each engine's aggregation/scan path rather than its skip indexes, using each side's idiomatic histogram (CH `toStartOfHour`, OO `histogram()`). The report page groups these into their own section. |
-| [`scripts/run-benchmark.py`](scripts/run-benchmark.py) | Cold-cache driver: runs each query N× per backend, reports p50/p95/p99 |
+| [`scripts/run-benchmark.py`](scripts/run-benchmark.py) | Benchmark driver: drops the page cache once, runs each query N× per backend (1 cold + N−1 hot), reports p50/p95/p99 |
 | [`index.html`](index.html) + [`scripts/build-report.py`](scripts/build-report.py) | Interactive results page (ClickBench-style UI). `build-report.py` regenerates `data.generated.js` (and the query tooltips) from `results/*.json` — open `index.html` via any static server, e.g. `python3 -m http.server` |
 | [`scripts/measure-storage.sh`](scripts/measure-storage.sh) | On-disk storage & index sizes for both backends |
 | `results/` | Output reports (git-ignored) |
@@ -171,9 +162,10 @@ pkill -f "clickhouse server"
 python3 scripts/build-report.py
 ```
 
-The runner clears the local OS page cache at the start of each query variant,
-then runs that query five times by default — a cold measurement (see
-[Methodology — why we measure cold cache](#methodology--why-we-measure-cold-cache)).
+The runner clears the local OS page cache once at the start of each query variant,
+then runs that query five times by default — so the first sample is cold and the
+rest are hot, and the report shows both (see
+[Methodology — cold vs hot](#methodology--cold-vs-hot-measured-side-by-side)).
 The cache drop is platform-aware and needs sudo: **macOS** uses `sudo purge`,
 **Linux** uses `sync && echo 3 > /proc/sys/vm/drop_caches`.
 
