@@ -1,0 +1,69 @@
+# ---- Data & benchmark artifacts ----
+data/
+datasets/
+*.csv
+*.tsv
+*.parquet
+*.json.gz
+*.log
+results/
+output/
+reports/
+*.bench
+*.result
+
+# ---- Server binaries & runtime state ----
+bin/
+volumes/
+.volumes/
+clickhouse-data/
+openobserve-data/
+minio-data/
+# ClickHouse standalone-binary scratch dirs that land in cwd
+preprocessed_configs/
+access/
+
+# ---- Secrets & local config ----
+.env
+.env.*
+!.env.example
+*.local
+secrets/
+credentials*
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# ---- Rust (datagen) ----
+target/
+**/target/
+
+# ---- Go ----
+bin/
+*.exe
+*.test
+*.out
+
+# ---- Node ----
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+PLAN.md
+
+openobserve-data*/

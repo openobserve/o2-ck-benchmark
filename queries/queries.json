@@ -1,0 +1,92 @@
+{
+  "queries": [
+    {
+      "id": "q0",
+      "name": "Single trace_id lookup",
+      "ch": "SELECT count() FROM k8s_logs WHERE trace_id = '299cb1bc60705f72a45c7d9f70a82156' AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000",
+      "oo": "SELECT count(*) FROM k8s_logs WHERE trace_id = '299cb1bc60705f72a45c7d9f70a82156'",
+      "ch_rows": "SELECT * FROM k8s_logs WHERE trace_id = '299cb1bc60705f72a45c7d9f70a82156' AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000 ORDER BY _timestamp DESC LIMIT 100",
+      "oo_rows": "SELECT * FROM k8s_logs WHERE trace_id = '299cb1bc60705f72a45c7d9f70a82156' ORDER BY _timestamp DESC LIMIT 100"
+    },
+    {
+      "id": "q1",
+      "name": "Single span_id lookup",
+      "ch": "SELECT count() FROM k8s_logs WHERE span_id = '7a4e90080fd2a013' AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000",
+      "oo": "SELECT count(*) FROM k8s_logs WHERE span_id = '7a4e90080fd2a013'",
+      "ch_rows": "SELECT * FROM k8s_logs WHERE span_id = '7a4e90080fd2a013' AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000 ORDER BY _timestamp DESC LIMIT 100",
+      "oo_rows": "SELECT * FROM k8s_logs WHERE span_id = '7a4e90080fd2a013' ORDER BY _timestamp DESC LIMIT 100"
+    },
+    {
+      "id": "q2",
+      "name": "Rare whole-token lookup (full request id in text)",
+      "ch": "SELECT count() FROM k8s_logs WHERE hasAnyTokens(message, ['474dbfe4c65a971176ae239869a6ba47']) AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000",
+      "oo": "SELECT count(*) FROM k8s_logs WHERE match_all('474dbfe4c65a971176ae239869a6ba47')",
+      "ch_rows": "SELECT * FROM k8s_logs WHERE hasAnyTokens(message, ['474dbfe4c65a971176ae239869a6ba47']) AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000 ORDER BY _timestamp DESC LIMIT 100",
+      "oo_rows": "SELECT * FROM k8s_logs WHERE match_all('474dbfe4c65a971176ae239869a6ba47') ORDER BY _timestamp DESC LIMIT 100"
+    },
+    {
+      "id": "q3",
+      "name": "Common token search",
+      "ch": "SELECT count() FROM k8s_logs WHERE hasAnyTokens(message, ['failed']) AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000",
+      "oo": "SELECT count(*) FROM k8s_logs WHERE match_all('failed')",
+      "ch_rows": "SELECT * FROM k8s_logs WHERE hasAnyTokens(message, ['failed']) AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000 ORDER BY _timestamp DESC LIMIT 100",
+      "oo_rows": "SELECT * FROM k8s_logs WHERE match_all('failed') ORDER BY _timestamp DESC LIMIT 100"
+    },
+    {
+      "id": "q4",
+      "name": "Compound filter (container + trace_id)",
+      "ch": "SELECT count() FROM k8s_logs WHERE kubernetes_container_name = 'api-gateway-container' AND trace_id = '299cb1bc60705f72a45c7d9f70a82156' AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000",
+      "oo": "SELECT count(*) FROM k8s_logs WHERE kubernetes_container_name = 'api-gateway-container' AND trace_id = '299cb1bc60705f72a45c7d9f70a82156'",
+      "ch_rows": "SELECT * FROM k8s_logs WHERE kubernetes_container_name = 'api-gateway-container' AND trace_id = '299cb1bc60705f72a45c7d9f70a82156' AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000 ORDER BY _timestamp DESC LIMIT 100",
+      "oo_rows": "SELECT * FROM k8s_logs WHERE kubernetes_container_name = 'api-gateway-container' AND trace_id = '299cb1bc60705f72a45c7d9f70a82156' ORDER BY _timestamp DESC LIMIT 100"
+    },
+    {
+      "id": "q5",
+      "name": "Filter + token (container + match_all / hasAnyTokens)",
+      "ch": "SELECT count() FROM k8s_logs WHERE kubernetes_container_name = 'api-gateway-container' AND hasAnyTokens(message, ['474dbfe4c65a971176ae239869a6ba47']) AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000",
+      "oo": "SELECT count(*) FROM k8s_logs WHERE kubernetes_container_name = 'api-gateway-container' AND match_all('474dbfe4c65a971176ae239869a6ba47')",
+      "ch_rows": "SELECT * FROM k8s_logs WHERE kubernetes_container_name = 'api-gateway-container' AND hasAnyTokens(message, ['474dbfe4c65a971176ae239869a6ba47']) AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000 ORDER BY _timestamp DESC LIMIT 100",
+      "oo_rows": "SELECT * FROM k8s_logs WHERE kubernetes_container_name = 'api-gateway-container' AND match_all('474dbfe4c65a971176ae239869a6ba47') ORDER BY _timestamp DESC LIMIT 100"
+    },
+    {
+      "id": "q6",
+      "name": "Double token (common AND rarer token)",
+      "ch": "SELECT count() FROM k8s_logs WHERE hasAnyTokens(message, ['failed']) AND hasAnyTokens(message, ['474dbfe4c65a971176ae239869a6ba47']) AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000",
+      "oo": "SELECT count(*) FROM k8s_logs WHERE match_all('failed') AND match_all('474dbfe4c65a971176ae239869a6ba47')",
+      "ch_rows": "SELECT * FROM k8s_logs WHERE hasAnyTokens(message, ['failed']) AND hasAnyTokens(message, ['474dbfe4c65a971176ae239869a6ba47']) AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000 ORDER BY _timestamp DESC LIMIT 100",
+      "oo_rows": "SELECT * FROM k8s_logs WHERE match_all('failed') AND match_all('474dbfe4c65a971176ae239869a6ba47') ORDER BY _timestamp DESC LIMIT 100"
+    },
+    {
+      "id": "q7",
+      "name": "High-cardinality equality (pod_name)",
+      "ch": "SELECT count() FROM k8s_logs WHERE kubernetes_pod_name = 'api-gateway-9a2c1e6f4-8923f' AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000",
+      "oo": "SELECT count(*) FROM k8s_logs WHERE kubernetes_pod_name = 'api-gateway-9a2c1e6f4-8923f'",
+      "ch_rows": "SELECT * FROM k8s_logs WHERE kubernetes_pod_name = 'api-gateway-9a2c1e6f4-8923f' AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000 ORDER BY _timestamp DESC LIMIT 100",
+      "oo_rows": "SELECT * FROM k8s_logs WHERE kubernetes_pod_name = 'api-gateway-9a2c1e6f4-8923f' ORDER BY _timestamp DESC LIMIT 100"
+    },
+    {
+      "id": "q8",
+      "name": "Histogram (events over time, 1h buckets)",
+      "category": "aggregation",
+      "note": "Full-range GROUP BY time bucket — the events-over-time bar chart every log viewer draws. Exercises each engine's aggregation/scan path, not its skip indexes. Each side uses its idiomatic histogram (CH toStartOfHour, OO histogram()).",
+      "ch": "SELECT toStartOfHour(toDateTime(intDiv(_timestamp, 1000000))) AS ts, count() FROM k8s_logs WHERE _timestamp BETWEEN 1780272000000000 AND 1811808000000000 GROUP BY ts ORDER BY ts",
+      "oo": "SELECT histogram(_timestamp, '1 hour') AS ts, count(*) FROM k8s_logs GROUP BY ts ORDER BY ts"
+    },
+    {
+      "id": "q9",
+      "name": "Top-N namespaces by volume",
+      "category": "aggregation",
+      "note": "Full-column GROUP BY over a LowCardinality dimension, ordered by count — the 'top talkers' panel on every dashboard. Pure aggregation work over the whole range.",
+      "ch": "SELECT kubernetes_namespace_name, count() AS c FROM k8s_logs WHERE _timestamp BETWEEN 1780272000000000 AND 1811808000000000 GROUP BY kubernetes_namespace_name ORDER BY c DESC LIMIT 10",
+      "oo": "SELECT kubernetes_namespace_name, count(*) AS c FROM k8s_logs GROUP BY kubernetes_namespace_name ORDER BY c DESC LIMIT 10"
+    },
+    {
+      "id": "q10",
+      "name": "Filtered histogram (token match over time)",
+      "category": "aggregation",
+      "note": "The most realistic analyst query: 'show me failed over time'. Combines the full-text index (match_all / hasAnyTokens) with a time-bucket GROUP BY, so both the index and the aggregation path are exercised together.",
+      "ch": "SELECT toStartOfHour(toDateTime(intDiv(_timestamp, 1000000))) AS ts, count() FROM k8s_logs WHERE hasAnyTokens(message, ['failed']) AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000 GROUP BY ts ORDER BY ts",
+      "oo": "SELECT histogram(_timestamp, '1 hour') AS ts, count(*) FROM k8s_logs WHERE match_all('failed') GROUP BY ts ORDER BY ts"
+    }
+  ]
+}
