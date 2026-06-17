@@ -35,7 +35,11 @@ DATA_DIR="$(cd "$DATA_DIR" && pwd -P)"
 if [[ -n "${CH_LISTEN_HOSTS:-}" ]]; then
   LISTEN_HOSTS="${CH_LISTEN_HOSTS//,/ }"
 else
-  LAN_IP="$( (hostname -I 2>/dev/null || ipconfig getifaddr en0 2>/dev/null) | awk '{print $1}')"
+  # Linux: `hostname -I`. macOS: query the interface backing the default route
+  # (often en1/Wi-Fi, not en0). `|| true` keeps a failed lookup from tripping
+  # `set -e` — an empty LAN_IP just means we listen on localhost only.
+  MAC_IF="$(route -n get default 2>/dev/null | awk '/interface:/{print $2}')"
+  LAN_IP="$( (hostname -I 2>/dev/null || ipconfig getifaddr "${MAC_IF:-en0}" 2>/dev/null || true) | awk '{print $1}')"
   LISTEN_HOSTS="127.0.0.1${LAN_IP:+ $LAN_IP}"
 fi
 LISTEN_CONF="${DATA_DIR}/listen.xml"
