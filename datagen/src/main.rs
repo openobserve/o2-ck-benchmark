@@ -425,6 +425,180 @@ fn make_batch(
         .collect()
 }
 
+/// Everything a single batch send needs: the HTTP client, both sink
+/// endpoints/credentials, the generation parameters, and the shared progress
+/// counters. Held behind an `Arc` and shared across every spawned task.
+struct Sink {
+    client: reqwest::Client,
+    oo_endpoint: Arc<String>,
+    oo_auth: Arc<String>,
+    oo_enabled: bool,
+    ch_base: Arc<String>,
+    ch_insert: Arc<String>,
+    ch_user: Arc<String>,
+    ch_password: Arc<String>,
+    ch_enabled: bool,
+    compress: bool,
+    seed: u64,
+    run_start_timestamp_us: u64,
+    trace_universe: usize,
+    ip_universe: usize,
+    ja3_universe: usize,
+    sent: Arc<AtomicU64>,
+    failed: Arc<AtomicU64>,
+    oo_failed: Arc<AtomicU64>,
+    ch_failed: Arc<AtomicU64>,
+    bytes_ok: Arc<AtomicU64>,
+}
+
+impl Sink {
+    /// Generate `this_batch` records starting at global record index
+    /// `start_record_idx` and ship them to every enabled target. Updates the
+    /// shared counters and returns `true` only if all enabled targets accepted
+    /// the batch.
+    async fn ship(&self, batch_idx: usize, start_record_idx: u64, this_batch: usize) -> bool {
+        let seed = self.seed;
+        let run_start_timestamp_us = self.run_start_timestamp_us;
+        let trace_universe = self.trace_universe;
+        let ip_universe = self.ip_universe;
+        let ja3_universe = self.ja3_universe;
+        let oo_enabled = self.oo_enabled;
+        let ch_enabled = self.ch_enabled;
+        let compress = self.compress;
+
+        // Per-record seed keeps content reproducible regardless of completion
+        // order or batch size. The global row index also drives _timestamp.
+        // Generating the payload inside spawn_blocking lets tokio worker threads
+        // run batch generation in parallel with in-flight HTTP sends. Each record
+        // is serialized ONCE; the two HTTP bodies — a JSON array (OpenObserve) and
+        // newline-delimited rows (ClickHouse JSONEachRow) — are assembled from the
+        // same per-record bytes, so dual-write pays no double-serialization cost.
+        let (oo_body, ch_body, raw_len) = tokio::task::spawn_blocking(move || {
+            let payload = make_batch(
+                seed,
+                start_record_idx,
+                this_batch,
+                run_start_timestamp_us,
+                trace_universe,
+                ip_universe,
+                ja3_universe,
+            );
+            let rows: Vec<Vec<u8>> = payload
+                .iter()
+                .map(|rec| serde_json::to_vec(rec).expect("serialize record"))
+                .collect();
+            let total_bytes: usize = rows.iter().map(|r| r.len()).sum();
+            let oo = if oo_enabled {
+                let mut buf = Vec::with_capacity(total_bytes + rows.len() + 1);
+                buf.push(b'[');
+                for (i, r) in rows.iter().enumerate() {
+                    if i > 0 {
+                        buf.push(b',');
+                    }
+                    buf.extend_from_slice(r);
+                }
+                buf.push(b']');
+                Some(buf)
+            } else {
+                None
+            };
+            let ch = if ch_enabled {
+                let mut buf = Vec::with_capacity(total_bytes + rows.len());
+                for r in &rows {
+                    buf.extend_from_slice(r);
+                    buf.push(b'\n');
+                }
+                Some(buf)
+            } else {
+                None
+            };
+            // Raw (uncompressed) volume for this batch — NDJSON preferred, else
+            // the JSON array. This is the logical ingest volume the MB/s stat
+            // reports, independent of on-the-wire compression.
+            let raw_len = ch
+                .as_ref()
+                .map(|b| b.len())
+                .or_else(|| oo.as_ref().map(|b| b.len()))
+                .unwrap_or(0) as u64;
+            // Compress on the worker thread (CPU work overlaps in-flight sends).
+            let (oo, ch) = if compress {
+                (oo.as_deref().map(gzip), ch.as_deref().map(gzip))
+            } else {
+                (oo, ch)
+            };
+            (oo, ch, raw_len)
+        })
+        .await
+        .expect("batch generation task panicked");
+
+        // Fire both sinks concurrently; each returns Ok(()) or an error string.
+        let oo_fut = async {
+            let Some(body) = oo_body else { return Ok(()) };
+            let mut req = self
+                .client
+                .post(self.oo_endpoint.as_str())
+                .header(reqwest::header::AUTHORIZATION, self.oo_auth.as_str())
+                .header(reqwest::header::CONTENT_TYPE, "application/json");
+            if compress {
+                req = req.header(reqwest::header::CONTENT_ENCODING, "gzip");
+            }
+            let res = req.body(body).send().await;
+            match res {
+                Ok(r) if r.status().is_success() => Ok(()),
+                Ok(r) => {
+                    let status = r.status();
+                    let b = r.text().await.unwrap_or_default();
+                    Err(format!("openobserve {status} {b}"))
+                }
+                Err(e) => Err(format!("openobserve {e}")),
+            }
+        };
+        let ch_fut = async {
+            let Some(body) = ch_body else { return Ok(()) };
+            let mut req = self
+                .client
+                .post(self.ch_base.as_str())
+                .query(&[("query", self.ch_insert.as_str())])
+                .header("X-ClickHouse-User", self.ch_user.as_str())
+                .header("X-ClickHouse-Key", self.ch_password.as_str())
+                .header(reqwest::header::CONTENT_TYPE, "application/x-ndjson");
+            if compress {
+                req = req.header(reqwest::header::CONTENT_ENCODING, "gzip");
+            }
+            let res = req.body(body).send().await;
+            match res {
+                Ok(r) if r.status().is_success() => Ok(()),
+                Ok(r) => {
+                    let status = r.status();
+                    let b = r.text().await.unwrap_or_default();
+                    Err(format!("clickhouse {status} {b}"))
+                }
+                Err(e) => Err(format!("clickhouse {e}")),
+            }
+        };
+
+        let (oo_res, ch_res) = tokio::join!(oo_fut, ch_fut);
+        let mut ok = true;
+        if let Err(e) = oo_res {
+            ok = false;
+            self.oo_failed.fetch_add(this_batch as u64, Ordering::Relaxed);
+            eprintln!("batch {batch_idx} {e}");
+        }
+        if let Err(e) = ch_res {
+            ok = false;
+            self.ch_failed.fetch_add(this_batch as u64, Ordering::Relaxed);
+            eprintln!("batch {batch_idx} {e}");
+        }
+        if ok {
+            self.sent.fetch_add(this_batch as u64, Ordering::Relaxed);
+            self.bytes_ok.fetch_add(raw_len, Ordering::Relaxed);
+        } else {
+            self.failed.fetch_add(this_batch as u64, Ordering::Relaxed);
+        }
+        ok
+    }
+}
+
 fn spawn_progress_reporter(
     sent: Arc<AtomicU64>,
     failed: Arc<AtomicU64>,
@@ -583,171 +757,65 @@ async fn main() -> Result<()> {
     );
 
     let mut remaining = args.total;
-    let seed = args.seed;
-    let compress = args.compress;
     let run_start_timestamp_us = Utc::now().timestamp_micros() as u64;
     let trace_universe = (args.total as f64 / 7.8).round() as usize;
     let ip_universe = (args.total as f64 * 0.005127018383746945).round() as usize;
     let ja3_universe = (args.total as f64 * (6.173306600579376 / 100.0)).round() as usize;
-    for batch_idx in 0..total_batches {
+
+    let sink = Arc::new(Sink {
+        client,
+        oo_endpoint,
+        oo_auth,
+        oo_enabled,
+        ch_base,
+        ch_insert,
+        ch_user,
+        ch_password,
+        ch_enabled,
+        compress: args.compress,
+        seed: args.seed,
+        run_start_timestamp_us,
+        trace_universe,
+        ip_universe,
+        ja3_universe,
+        sent: sent.clone(),
+        failed: failed.clone(),
+        oo_failed: oo_failed.clone(),
+        ch_failed: ch_failed.clone(),
+        bytes_ok: bytes_ok.clone(),
+    });
+
+    // Prime the stream BEFORE fanning out. Batch 0 holds the global-minimum
+    // `_timestamp` (record index 0). Ship it alone and wait for the server to
+    // accept it: until this returns there is exactly one request in flight, so
+    // OpenObserve is guaranteed to create the stream from the earliest record and
+    // set created_at to the true min_ts. (The concurrent loop below completes
+    // batches out of order, so without this an out-of-order batch could create
+    // the stream first and leave created_at later than the real min_ts.) If
+    // batch 0 cannot land we abort, rather than let a later batch define
+    // created_at.
+    {
+        let this_batch = remaining.min(args.batch_size);
+        remaining -= this_batch;
+        if !sink.ship(0, 0, this_batch).await {
+            bail!(
+                "priming batch (batch 0) failed; aborting so the stream's created_at \
+                 is not set from a later, out-of-order batch"
+            );
+        }
+    }
+
+    for batch_idx in 1..total_batches {
         let this_batch = remaining.min(args.batch_size);
         let start_record_idx = (batch_idx * args.batch_size) as u64;
         remaining -= this_batch;
 
         let permit = sem.clone().acquire_owned().await.unwrap();
-        let client = client.clone();
-        let oo_endpoint = oo_endpoint.clone();
-        let oo_auth = oo_auth.clone();
-        let ch_base = ch_base.clone();
-        let ch_insert = ch_insert.clone();
-        let ch_user = ch_user.clone();
-        let ch_password = ch_password.clone();
-        let sent = sent.clone();
-        let failed = failed.clone();
-        let oo_failed = oo_failed.clone();
-        let ch_failed = ch_failed.clone();
-        let bytes_ok = bytes_ok.clone();
-
-        let handle = tokio::spawn(async move {
+        let sink = sink.clone();
+        handles.push(tokio::spawn(async move {
             let _permit = permit;
-            // Per-record seed keeps content reproducible regardless of completion
-            // order or batch size. The global row index also drives _timestamp.
-            // Generating the payload inside the spawned task lets tokio worker threads
-            // run batch generation in parallel with in-flight HTTP sends. Each record is
-            // serialized ONCE; the two HTTP bodies — a JSON array (OpenObserve) and
-            // newline-delimited rows (ClickHouse JSONEachRow) — are assembled from the
-            // same per-record bytes, so dual-write pays no double-serialization cost.
-            let (oo_body, ch_body, raw_len) = tokio::task::spawn_blocking(move || {
-                let payload = make_batch(
-                    seed,
-                    start_record_idx,
-                    this_batch,
-                    run_start_timestamp_us,
-                    trace_universe,
-                    ip_universe,
-                    ja3_universe,
-                );
-                let rows: Vec<Vec<u8>> = payload
-                    .iter()
-                    .map(|rec| serde_json::to_vec(rec).expect("serialize record"))
-                    .collect();
-                let total_bytes: usize = rows.iter().map(|r| r.len()).sum();
-                let oo = if oo_enabled {
-                    let mut buf = Vec::with_capacity(total_bytes + rows.len() + 1);
-                    buf.push(b'[');
-                    for (i, r) in rows.iter().enumerate() {
-                        if i > 0 {
-                            buf.push(b',');
-                        }
-                        buf.extend_from_slice(r);
-                    }
-                    buf.push(b']');
-                    Some(buf)
-                } else {
-                    None
-                };
-                let ch = if ch_enabled {
-                    let mut buf = Vec::with_capacity(total_bytes + rows.len());
-                    for r in &rows {
-                        buf.extend_from_slice(r);
-                        buf.push(b'\n');
-                    }
-                    Some(buf)
-                } else {
-                    None
-                };
-                // Raw (uncompressed) volume for this batch — NDJSON preferred, else
-                // the JSON array. This is the logical ingest volume the MB/s stat
-                // reports, independent of on-the-wire compression.
-                let raw_len = ch
-                    .as_ref()
-                    .map(|b| b.len())
-                    .or_else(|| oo.as_ref().map(|b| b.len()))
-                    .unwrap_or(0) as u64;
-                // Compress on the worker thread (CPU work overlaps in-flight sends).
-                let (oo, ch) = if compress {
-                    (oo.as_deref().map(gzip), ch.as_deref().map(gzip))
-                } else {
-                    (oo, ch)
-                };
-                (oo, ch, raw_len)
-            })
-            .await
-            .expect("batch generation task panicked");
-
-            // Fire both sinks concurrently; each returns Ok(()) or an error string.
-            let oo_fut = async {
-                let Some(body) = oo_body else { return Ok(()) };
-                let mut req = client
-                    .post(oo_endpoint.as_str())
-                    .header(reqwest::header::AUTHORIZATION, oo_auth.as_str())
-                    .header(reqwest::header::CONTENT_TYPE, "application/json");
-                if compress {
-                    req = req.header(reqwest::header::CONTENT_ENCODING, "gzip");
-                }
-                let res = req.body(body).send().await;
-                match res {
-                    Ok(r) if r.status().is_success() => Ok(()),
-                    Ok(r) => {
-                        let status = r.status();
-                        let b = r.text().await.unwrap_or_default();
-                        Err(format!("openobserve {status} {b}"))
-                    }
-                    Err(e) => Err(format!("openobserve {e}")),
-                }
-            };
-            let ch_fut = async {
-                let Some(body) = ch_body else { return Ok(()) };
-                let mut req = client
-                    .post(ch_base.as_str())
-                    .query(&[("query", ch_insert.as_str())])
-                    .header("X-ClickHouse-User", ch_user.as_str())
-                    .header("X-ClickHouse-Key", ch_password.as_str())
-                    .header(reqwest::header::CONTENT_TYPE, "application/x-ndjson");
-                if compress {
-                    req = req.header(reqwest::header::CONTENT_ENCODING, "gzip");
-                }
-                let res = req.body(body).send().await;
-                match res {
-                    Ok(r) if r.status().is_success() => Ok(()),
-                    Ok(r) => {
-                        let status = r.status();
-                        let b = r.text().await.unwrap_or_default();
-                        Err(format!("clickhouse {status} {b}"))
-                    }
-                    Err(e) => Err(format!("clickhouse {e}")),
-                }
-            };
-
-            let (oo_res, ch_res) = tokio::join!(oo_fut, ch_fut);
-            let mut ok = true;
-            if let Err(e) = oo_res {
-                ok = false;
-                oo_failed.fetch_add(this_batch as u64, Ordering::Relaxed);
-                eprintln!("batch {batch_idx} {e}");
-            }
-            if let Err(e) = ch_res {
-                ok = false;
-                ch_failed.fetch_add(this_batch as u64, Ordering::Relaxed);
-                eprintln!("batch {batch_idx} {e}");
-            }
-            if ok {
-                sent.fetch_add(this_batch as u64, Ordering::Relaxed);
-                bytes_ok.fetch_add(raw_len, Ordering::Relaxed);
-            } else {
-                failed.fetch_add(this_batch as u64, Ordering::Relaxed);
-            }
-        });
-        // Batch 0 carries the global-minimum `_timestamp`. Ship it synchronously
-        // before fanning out the rest so OpenObserve creates the stream from the
-        // earliest record. Batches complete out of order, so without this an
-        // out-of-order batch could create the stream first and leave its
-        // created_at later than the true min_ts of the data.
-        if batch_idx == 0 {
-            let _ = handle.await;
-        } else {
-            handles.push(handle);
-        }
+            sink.ship(batch_idx, start_record_idx, this_batch).await;
+        }));
     }
 
     for h in handles {
