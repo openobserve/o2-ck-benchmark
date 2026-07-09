@@ -158,8 +158,10 @@ scripts/start-clickhouse.sh
 python3 scripts/run-benchmark.py --target clickhouse --runs 5 --ch-url http://127.0.0.1:8123
 pkill -f "clickhouse server"
 
-# --- Generate report ---
+# --- Generate report (HTML + data.generated.js) ---
+# Reads results/ingest.json for record count; override with --records if needed.
 python3 scripts/build-report.py
+# python3 scripts/build-report.py --records 100000000
 ```
 
 The runner clears the local OS page cache once at the start of each query variant,
@@ -180,9 +182,16 @@ scripts/measure-storage.sh --oo-data-dir ./openobserve-data
 
 ### Output
 
-[`results/summary.md`](results/) is the unified report — machine specs, ingest
-throughput, storage & index size (index as % of raw JSON), and the latency
-table + percentiles. Supporting files: `results/{openobserve,clickhouse}.json`
-(per-backend raw), `machine.json`, and `ingest.json`.
+[`results/summary.md`](results/) is the unified markdown report — machine specs,
+ingest throughput (including **record count**), storage & index size (index as %
+of raw JSON), and the latency table + percentiles. Supporting files:
+`results/{openobserve,clickhouse}.json` (per-backend raw), `machine.json`, and
+`ingest.json`.
+
+[`index.html`](index.html) + [`data.generated.js`](data.generated.js) are the
+ClickBench-style interactive page. `build-report.py` only rewrites
+`data.generated.js` (systems, query SQL tooltips, and `dataset_meta` with record
+count / raw JSON bytes) — `index.html` is left untouched. The Storage Size chart
+builds its “raw JSON” reference from `dataset_meta.raw_bytes`.
 
 To start a fresh comparison, delete `results/*.json`.

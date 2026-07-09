@@ -95,6 +95,13 @@
             color: var(--title-color);
         }
 
+        .dataset-meta {
+            margin: -0.5rem 0 0 0;
+            color: var(--color);
+            opacity: 0.75;
+            font-size: 1rem;
+        }
+
         table {
              border-spacing: 1px;
         }
@@ -356,38 +363,13 @@
         }
     </style>
     <script type="text/javascript" src="data.generated.js"></script>
-    <script type="text/javascript">
-
-    const queries = [
-    "OO: SELECT count(*) FROM k8s_logs WHERE trace_id = '299cb1bc60705f72a45c7d9f70a82156' | CH: SELECT count() FROM k8s_logs WHERE trace_id = '299cb1bc60705f72a45c7d9f70a82156' AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000",
-    "OO: SELECT count(*) FROM k8s_logs WHERE span_id = '7a4e90080fd2a013' | CH: SELECT count() FROM k8s_logs WHERE span_id = '7a4e90080fd2a013' AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000",
-    "OO: SELECT count(*) FROM k8s_logs WHERE match_all('474dbfe4c65a971176ae239869a6ba47') | CH: SELECT count() FROM k8s_logs WHERE hasAnyTokens(message, ['474dbfe4c65a971176ae239869a6ba47']) AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000",
-    "OO: SELECT count(*) FROM k8s_logs WHERE match_all('failed') | CH: SELECT count() FROM k8s_logs WHERE hasAnyTokens(message, ['failed']) AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000",
-    "OO: SELECT count(*) FROM k8s_logs WHERE kubernetes_container_name = 'api-gateway-container' AND trace_id = '299cb1bc60705f72a45c7d9f70a82156' | CH: SELECT count() FROM k8s_logs WHERE kubernetes_container_name = 'api-gateway-container' AND trace_id = '299cb1bc60705f72a45c7d9f70a82156' AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000",
-    "OO: SELECT count(*) FROM k8s_logs WHERE kubernetes_container_name = 'api-gateway-container' AND match_all('474dbfe4c65a971176ae239869a6ba47') | CH: SELECT count() FROM k8s_logs WHERE kubernetes_container_name = 'api-gateway-container' AND hasAnyTokens(message, ['474dbfe4c65a971176ae239869a6ba47']) AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000",
-    "OO: SELECT count(*) FROM k8s_logs WHERE match_all('failed') AND match_all('474dbfe4c65a971176ae239869a6ba47') | CH: SELECT count() FROM k8s_logs WHERE hasAnyTokens(message, ['failed']) AND hasAnyTokens(message, ['474dbfe4c65a971176ae239869a6ba47']) AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000",
-    "OO: SELECT count(*) FROM k8s_logs WHERE kubernetes_pod_name = 'api-gateway-9a2c1e6f4-8923f' | CH: SELECT count() FROM k8s_logs WHERE kubernetes_pod_name = 'api-gateway-9a2c1e6f4-8923f' AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000",
-    "OO: SELECT histogram(_timestamp, '1 hour') AS ts, count(*) FROM k8s_logs GROUP BY ts ORDER BY ts | CH: SELECT toStartOfHour(toDateTime(intDiv(_timestamp, 1000000))) AS ts, count() FROM k8s_logs WHERE _timestamp BETWEEN 1780272000000000 AND 1811808000000000 GROUP BY ts ORDER BY ts",
-    "OO: SELECT kubernetes_namespace_name, count(*) AS c FROM k8s_logs GROUP BY kubernetes_namespace_name ORDER BY c DESC LIMIT 10 | CH: SELECT kubernetes_namespace_name, count() AS c FROM k8s_logs WHERE _timestamp BETWEEN 1780272000000000 AND 1811808000000000 GROUP BY kubernetes_namespace_name ORDER BY c DESC LIMIT 10",
-    "OO: SELECT histogram(_timestamp, '1 hour') AS ts, count(*) FROM k8s_logs WHERE match_all('failed') GROUP BY ts ORDER BY ts | CH: SELECT toStartOfHour(toDateTime(intDiv(_timestamp, 1000000))) AS ts, count() FROM k8s_logs WHERE hasAnyTokens(message, ['failed']) AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000 GROUP BY ts ORDER BY ts",
-    "OO: SELECT * FROM k8s_logs WHERE trace_id = '299cb1bc60705f72a45c7d9f70a82156' ORDER BY _timestamp DESC LIMIT 100 | CH: SELECT * FROM k8s_logs WHERE trace_id = '299cb1bc60705f72a45c7d9f70a82156' AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000 ORDER BY _timestamp DESC LIMIT 100",
-    "OO: SELECT * FROM k8s_logs WHERE span_id = '7a4e90080fd2a013' ORDER BY _timestamp DESC LIMIT 100 | CH: SELECT * FROM k8s_logs WHERE span_id = '7a4e90080fd2a013' AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000 ORDER BY _timestamp DESC LIMIT 100",
-    "OO: SELECT * FROM k8s_logs WHERE match_all('474dbfe4c65a971176ae239869a6ba47') ORDER BY _timestamp DESC LIMIT 100 | CH: SELECT * FROM k8s_logs WHERE hasAnyTokens(message, ['474dbfe4c65a971176ae239869a6ba47']) AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000 ORDER BY _timestamp DESC LIMIT 100",
-    "OO: SELECT * FROM k8s_logs WHERE match_all('failed') ORDER BY _timestamp DESC LIMIT 100 | CH: SELECT * FROM k8s_logs WHERE hasAnyTokens(message, ['failed']) AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000 ORDER BY _timestamp DESC LIMIT 100",
-    "OO: SELECT * FROM k8s_logs WHERE kubernetes_container_name = 'api-gateway-container' AND trace_id = '299cb1bc60705f72a45c7d9f70a82156' ORDER BY _timestamp DESC LIMIT 100 | CH: SELECT * FROM k8s_logs WHERE kubernetes_container_name = 'api-gateway-container' AND trace_id = '299cb1bc60705f72a45c7d9f70a82156' AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000 ORDER BY _timestamp DESC LIMIT 100",
-    "OO: SELECT * FROM k8s_logs WHERE kubernetes_container_name = 'api-gateway-container' AND match_all('474dbfe4c65a971176ae239869a6ba47') ORDER BY _timestamp DESC LIMIT 100 | CH: SELECT * FROM k8s_logs WHERE kubernetes_container_name = 'api-gateway-container' AND hasAnyTokens(message, ['474dbfe4c65a971176ae239869a6ba47']) AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000 ORDER BY _timestamp DESC LIMIT 100",
-    "OO: SELECT * FROM k8s_logs WHERE match_all('failed') AND match_all('474dbfe4c65a971176ae239869a6ba47') ORDER BY _timestamp DESC LIMIT 100 | CH: SELECT * FROM k8s_logs WHERE hasAnyTokens(message, ['failed']) AND hasAnyTokens(message, ['474dbfe4c65a971176ae239869a6ba47']) AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000 ORDER BY _timestamp DESC LIMIT 100",
-    "OO: SELECT * FROM k8s_logs WHERE kubernetes_pod_name = 'api-gateway-9a2c1e6f4-8923f' ORDER BY _timestamp DESC LIMIT 100 | CH: SELECT * FROM k8s_logs WHERE kubernetes_pod_name = 'api-gateway-9a2c1e6f4-8923f' AND _timestamp BETWEEN 1780272000000000 AND 1811808000000000 ORDER BY _timestamp DESC LIMIT 100",
-    ];
-
-    const additional_data_size_points = [];
-    </script>
 </head>
 <body>
 
 <div class="header stick-left">
     <span class="nowrap themes"><span id="toggle-dark">🌚</span><span id="toggle-light">🌞</span></span>
-    <h1>OpenObserve vs ClickHouse — Observability Benchmark</title></h1>
+    <h1>OpenObserve vs ClickHouse — Observability Benchmark</h1>
+    <p id="dataset_meta" class="dataset-meta"></p>
 </div>
 
 <table class="selectors-container stick-left">
@@ -1074,7 +1056,14 @@ function render() {
     [...document.querySelectorAll('.comparison')].map(e => e.style.display = 'block');
 
     if (selectors.metric == 'size') {
-        filtered_data = [...filtered_data, ...additional_data_size_points];
+        const meta = (typeof dataset_meta !== 'undefined' && dataset_meta) ? dataset_meta : {};
+        if (meta.raw_bytes) {
+            filtered_data = [...filtered_data, {
+                fake: true,
+                system: 'raw JSON',
+                data_size: meta.raw_bytes,
+            }];
+        }
     }
 
     let [sorted_indices, baseline_data] = renderSummary(filtered_data);
@@ -1333,7 +1322,38 @@ if (window.location.hash) {
     } catch {}
 }
 
+function formatRecords(n) {
+    if (n == null || n === undefined) return null;
+    if (n >= 1e9 && n % 1e9 === 0) return `${n / 1e9} billion`;
+    if (n >= 1e6 && n % 1e6 === 0) return `${n / 1e6} million`;
+    return n.toLocaleString();
+}
+
+function renderDatasetMeta() {
+    const el = document.getElementById('dataset_meta');
+    if (!el) return;
+    const meta = (typeof dataset_meta !== 'undefined' && dataset_meta) ? dataset_meta : {};
+    const fromData = (typeof data !== 'undefined' && data.length) ? data[0].records : null;
+    const records = meta.records != null ? meta.records : fromData;
+    if (records == null) {
+        el.textContent = '';
+        return;
+    }
+    const parts = [`Dataset: ${formatRecords(records)} records`];
+    if (meta.raw_bytes) {
+        parts.push(`${(meta.raw_bytes / 1024 / 1024 / 1024).toFixed(1)} GiB raw JSON`);
+    }
+    if (meta.load_time) {
+        parts.push(`ingest ${Math.round(meta.load_time)}s`);
+    }
+    if (meta.rate_rec_s) {
+        parts.push(`${Number(meta.rate_rec_s).toLocaleString()} rec/s`);
+    }
+    el.textContent = parts.join(' · ');
+}
+
 updateSelectors();
+renderDatasetMeta();
 render();
 
 </script>

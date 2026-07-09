@@ -2,15 +2,17 @@
 """Generate data.generated.js for the ClickBench-style results page (index.html).
 
 Reads results/{openobserve,clickhouse}.json (+ machine.json, ingest.json) and
-writes data.generated.js next to index.html. Also rewrites the `const queries`
-array inside index.html so the Q0..Qn tooltips always match the data order.
+writes data.generated.js next to index.html. All report data lives in that file
+(data, queries, query_sections, dataset_meta) so index.html does not need to be
+rewritten on each build.
 
-Usage:  python3 scripts/build-report.py [--results results] [--root .]
+Usage:
+  python3 scripts/build-report.py [--results results] [--root .]
+  python3 scripts/build-report.py --records 500000000   # if ingest.json is missing
 """
 import argparse
 import datetime
 import json
-import re
 from pathlib import Path
 
 TAGS = {
@@ -23,6 +25,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--results", default="results")
     ap.add_argument("--root", default=".", help="dir containing index.html")
+    ap.add_argument("--records", type=int, default=None,
+                    help="override dataset record count (default: ingest.json records_sent)")
     args = ap.parse_args()
     rd, root = Path(args.results), Path(args.root)
 
@@ -43,6 +47,9 @@ def main():
 
     machine = load(rd / "machine.json") or {}
     ingest = load(rd / "ingest.json") or {}
+    records = args.records
+    if records is None and ingest.get("records_sent") is not None:
+        records = int(ingest["records_sent"])
 
     # Merged query order. The runner interleaves count/rows shapes; regroup so
     # the page shows all scan count() queries first, then aggregation queries
@@ -85,7 +92,7 @@ def main():
             else:
                 result.append(None)
         st = per_system[s].get("storage") or {}
-        entries.append({
+        entry = {
             "system": s,
             "date": today,
             "machine": machine_str,
@@ -98,58 +105,42 @@ def main():
             "data_size": int(st.get("data_on_disk", 0)) + int(st.get("index_bytes", 0)),
             "result": result,
             "source": f"results/{s}.json",
-        })
+        }
+        if records is not None:
+            entry["records"] = records
+        entries.append(entry)
 
-    out_js = root / "data.generated.js"
-    out_js.write_text("const data = [\n"
-                      + ",\n".join(json.dumps(e) for e in entries) + "\n];\n"
-                      + "const query_sections = "
-                      + json.dumps({str(k): v for k, v in sections.items()})
-                      + ";\n")
-    print(f"wrote {out_js} ({len(entries)} systems x {len(order)} queries)")
+    dataset_meta = {}
+    if records is not None:
+        dataset_meta["records"] = records
+    if ingest.get("raw_bytes"):
+        dataset_meta["raw_bytes"] = int(ingest["raw_bytes"])
+    if ingest.get("elapsed_s") is not None:
+        dataset_meta["load_time"] = ingest["elapsed_s"]
+    if ingest.get("rate_rec_s") is not None:
+        dataset_meta["rate_rec_s"] = ingest["rate_rec_s"]
+    if ingest.get("rate_mb_s") is not None:
+        dataset_meta["rate_mb_s"] = ingest["rate_mb_s"]
 
-    # Rewrite the `const queries = [...]` block in index.html so tooltips match.
+    # Query SQL tooltips (same order as result columns).
     qstrings = []
     for qid in order:
-        q = meta_by_id[qid]
         sqls = " | ".join(
             f"{'OO' if s == 'openobserve' else 'CH'}: {by_sys[s][qid]['sql']}"
             for s in systems if qid in by_sys[s] and by_sys[s][qid].get("sql"))
         qstrings.append(sqls)
-    block = ("const queries = [\n"
-             + ",\n".join(json.dumps(s) for s in qstrings) + ",\n];")
-    html_path = root / "index.html"
-    html = html_path.read_text()
-    html, n = re.subn(r"const queries = \[.*?\n\];", lambda _: block, html,
-                      count=1, flags=re.S)
-    if n != 1:
-        raise SystemExit("could not locate `const queries` block in index.html")
-    # Raw-data size reference points (replaces ClickBench's hits.* points).
-    points = []
-    if ingest.get("raw_bytes"):
-        points.append({"fake": True, "system": "raw JSON",
-                       "data_size": int(ingest["raw_bytes"])})
-    pblock = ("const additional_data_size_points = [\n"
-              + ",\n".join(json.dumps(p) for p in points) + ("\n" if points else "")
-              + "];")
-    html, n = re.subn(r"const additional_data_size_points = \[.*?\n\];",
-                      lambda _: pblock, html, count=1, flags=re.S)
-    if n != 1:
-        raise SystemExit("could not locate additional_data_size_points block")
-    # Branding: title / h1 / header links.
-    html = html.replace(
-        "<title>ClickBench — a Benchmark For Analytical DBMS</title>",
-        "<title>OpenObserve vs ClickHouse — Observability Benchmark</title>")
-    html = html.replace(
-        "<h1>ClickBench — a Benchmark For Analytical DBMS</h1>",
-        "<h1>OpenObserve vs ClickHouse — Observability Benchmark</h1>")
-    html = re.sub(
-        r'<a href="https://github\.com/ClickHouse/ClickBench/">Methodology</a>.*?</a>\n',
-        '<a href="README.md">Methodology</a> | <a href="PLAN.md">Plan</a> | '
-        '<a href="results/summary.md">Markdown report</a>\n',
-        html, count=1, flags=re.S)
-    html_path.write_text(html)
-    print(f"patched {html_path} (queries block: {len(qstrings)} entries)")
+
+    out_js = root / "data.generated.js"
+    parts = [
+        "const data = [\n" + ",\n".join(json.dumps(e) for e in entries) + "\n];",
+        "const queries = [\n" + ",\n".join(json.dumps(s) for s in qstrings) + ",\n];",
+        "const query_sections = "
+        + json.dumps({str(k): v for k, v in sections.items()}) + ";",
+        "const dataset_meta = " + json.dumps(dataset_meta) + ";",
+    ]
+    out_js.write_text("\n".join(parts) + "\n")
+    rec_note = f", {records:,} records" if records is not None else ""
+    print(f"wrote {out_js} ({len(entries)} systems x {len(order)} queries{rec_note})")
 
 
 if __name__ == "__main__":
