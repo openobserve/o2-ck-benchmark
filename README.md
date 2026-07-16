@@ -128,6 +128,14 @@ cd datagen && cargo build --release
   --stats-out ../results/ingest.json                  # --target both (default)
 cd ..
 
+# Confirm wrote data is ame
+## ClickHouse
+./bin/clickhouse client --host 127.0.0.1 -q 'select count(*) from k8s_logs'
+## OpenObserve
+sqlite3 openobserve-data/db/metadata.sqlite
+> select sum(records) from file_list;
+> .q
+
 # Let OpenObserve finish compacting WAL -> parquet+index, then STOP BOTH servers
 pkill -f "clickhouse server"; pkill -f bin/openobserve
 ```
