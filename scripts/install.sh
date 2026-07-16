@@ -13,7 +13,7 @@ WHAT="${1:-all}"
 
 # OpenObserve open-source release (https://downloads.openobserve.ai). Override with
 # OPENOBSERVE_VERSION=vX.Y.Z to pin a different version.
-OPENOBSERVE_VERSION="${OPENOBSERVE_VERSION:-v0.91.0-rc2}"
+OPENOBSERVE_VERSION="${OPENOBSERVE_VERSION:-v0.92.0-rc2}"
 
 detect_openobserve_platform() {
   local os arch

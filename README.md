@@ -53,7 +53,7 @@ Both are single-node, native binaries living in `bin/` (git-ignored). Install wi
 | | Binary | Version (tested) | Endpoint |
 |---|---|---|---|
 | ClickHouse  | `bin/clickhouse`  | 26.6.1       | HTTP `http://127.0.0.1:8123`, native `127.0.0.1:9000` |
-| OpenObserve | `bin/openobserve` | OSS v0.91.0-rc2  | `http://localhost:5080` (login `root@example.com` / `Complexpass#123`) |
+| OpenObserve | `bin/openobserve` | OSS v0.92.0-rc2  | `http://localhost:5080` (login `root@example.com` / `Complexpass#123`) |
 
 > `bin/clickhouse` is both the server and the client. OpenObserve OSS arm64 comes
 > from `https://downloads.openobserve.ai/releases/openobserve/<ver>/openobserve-<ver>-darwin-arm64.tar.gz`.
