@@ -1341,10 +1341,12 @@ function renderDatasetMeta() {
     }
     const parts = [`Dataset: ${formatRecords(records)} records`];
     if (meta.raw_bytes) {
-        parts.push(`${(meta.raw_bytes / 1024 / 1024 / 1024).toFixed(1)} GiB raw JSON`);
+        const gib = meta.raw_bytes / 1024 / 1024 / 1024;
+        parts.push(gib >= 1024 ? `${(gib / 1024).toFixed(2)} TiB raw JSON` : `${gib.toFixed(1)} GiB raw JSON`);
     }
     if (meta.load_time) {
-        parts.push(`ingest ${Math.round(meta.load_time)}s`);
+        const s = Math.round(meta.load_time);
+        parts.push(s >= 3600 ? `ingest ≈${(s / 3600).toFixed(1)}h` : `ingest ${s}s`);
     }
     if (meta.rate_rec_s) {
         parts.push(`${Number(meta.rate_rec_s).toLocaleString()} rec/s`);

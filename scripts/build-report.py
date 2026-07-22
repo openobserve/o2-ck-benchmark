@@ -79,7 +79,8 @@ def main():
     # Per-system per-query samples (seconds); null when errored/missing.
     by_sys = {s: {q["id"]: q for q in per_system[s]["queries"]} for s in systems}
     machine_str = (f"{machine.get('cpu', 'unknown')}, {machine.get('cores', '?')} cores, "
-                   f"{machine.get('memory_gib', '?')} GiB")
+                   f"{machine.get('memory_gib', '?')} GiB"
+                   + (f", {machine['disk']}" if machine.get("disk") else ""))
     today = datetime.date.today().isoformat()
 
     entries = []
