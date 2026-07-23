@@ -68,7 +68,7 @@
       "id": "q8",
       "name": "Histogram (events over time, 1h buckets)",
       "category": "aggregation",
-      "note": "Full-range GROUP BY time bucket — the events-over-time bar chart every log viewer draws. Exercises each engine's aggregation/scan path, not its skip indexes. Each side uses its idiomatic histogram (CH toStartOfHour, OO histogram()).",
+      "note": "Full-range GROUP BY time bucket — the events-over-time bar chart every log viewer draws. Exercises each engine's aggregation/scan path, not its skip indexes. Each side uses its idiomatic histogram (ClickHouse toStartOfHour, OpenObserve histogram()).",
       "ch": "SELECT toStartOfHour(toDateTime(intDiv(_timestamp, 1000000))) AS ts, count() FROM k8s_logs WHERE _timestamp BETWEEN 1780272000000000 AND 1811808000000000 GROUP BY ts ORDER BY ts",
       "oo": "SELECT histogram(_timestamp, '1 hour') AS ts, count(*) FROM k8s_logs GROUP BY ts ORDER BY ts"
     },
