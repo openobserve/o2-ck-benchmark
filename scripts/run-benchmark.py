@@ -489,7 +489,7 @@ def main():
     # Persist this run's per-backend results (with storage, collected while this
     # backend's server is up), then (re)build the combined report from whichever
     # backend files exist — so separate single-target runs accumulate into one
-    # OO-vs-CH comparison.
+    # OpenObserve-vs-ClickHouse comparison.
     for b in backends:
         try:
             storage = (b.collect_storage(args.oo_data_dir)
@@ -513,7 +513,7 @@ def build_combined_report(results_dir, out_path, ingest_stats_path=None):
     Works whether both engines were benchmarked together (--target both) or in
     separate isolated runs (--target openobserve, then --target clickhouse): each
     run drops results/<backend>.json, and this merges all present backends by
-    query id into one OO-vs-CH table. Also folds in machine specs (machine.json),
+    query id into one OpenObserve-vs-ClickHouse table. Also folds in machine specs (machine.json),
     ingest throughput (ingest.json), and per-backend storage / index sizes.
     """
     order = ["openobserve", "clickhouse"]
@@ -537,7 +537,7 @@ def build_combined_report(results_dir, out_path, ingest_stats_path=None):
 
     # Common raw-JSON denominator for index % and compression. OpenObserve's
     # `original_size` (from file_list) IS the raw ingested JSON volume and is the
-    # preferred source; fall back to datagen's --stats-out raw_bytes if OO wasn't
+    # preferred source; fall back to datagen's --stats-out raw_bytes if OpenObserve wasn't
     # measured. Both engines are compared against this single number.
     oo_storage = (data.get("openobserve") or {}).get("storage") or {}
     raw_bytes = oo_storage.get("data_uncompressed")
@@ -639,7 +639,7 @@ def build_combined_report(results_dir, out_path, ingest_stats_path=None):
         for n in names:
             e = q["b"].get(n)
             if e and e.get("sql_template"):
-                tag = "OO" if n == "openobserve" else "CH"
+                tag = "OpenObserve" if n == "openobserve" else "ClickHouse"
                 sqlt = e["sql_template"]
                 qcell += f"<br>`{tag}:` `{sqlt}`"
         cells = [qcell]
@@ -654,8 +654,8 @@ def build_combined_report(results_dir, out_path, ingest_stats_path=None):
         if len(names) == 2:
             if len(meds) == 2 and meds["openobserve"] > 0 and meds["clickhouse"] > 0:
                 oo, ch = meds["openobserve"], meds["clickhouse"]
-                cells.append(f"OO {ch/oo:.1f}× faster" if oo < ch
-                             else f"CH {oo/ch:.1f}× faster")
+                cells.append(f"OpenObserve {ch/oo:.1f}× faster" if oo < ch
+                             else f"ClickHouse {oo/ch:.1f}× faster")
             else:
                 cells.append("-")
         L.append("| " + " | ".join(cells) + " |")

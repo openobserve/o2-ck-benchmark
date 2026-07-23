@@ -127,7 +127,7 @@ def main():
     qstrings = []
     for qid in order:
         sqls = " | ".join(
-            f"{'OO' if s == 'openobserve' else 'CH'}: {by_sys[s][qid]['sql']}"
+            f"{'OpenObserve' if s == 'openobserve' else 'ClickHouse'}: {by_sys[s][qid]['sql']}"
             for s in systems if qid in by_sys[s] and by_sys[s][qid].get("sql"))
         qstrings.append(sqls)
 

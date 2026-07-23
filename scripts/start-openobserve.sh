@@ -6,9 +6,9 @@
 # skip indexes in schemas/clickhouse.sql so neither side is under-tuned:
 #
 #   ClickHouse bloom_filter (trace_id / span_id / kubernetes_pod_name)
-#       <->  OO secondary index   (ZO_FEATURE_INDEX_EXTRA_FIELDS)
+#       <->  OpenObserve secondary index   (ZO_FEATURE_INDEX_EXTRA_FIELDS)
 #   ClickHouse text() inverted index (message)
-#       <->  OO full-text index   (ZO_FEATURE_FULLTEXT_EXTRA_FIELDS)
+#       <->  OpenObserve full-text index   (ZO_FEATURE_FULLTEXT_EXTRA_FIELDS)
 # ClickHouse is ORDER BY (_timestamp) only — time-ordered like OpenObserve, with
 # no structured column in the sort-key prefix — so neither engine gets a layout
 # advantage on the benchmark queries.
