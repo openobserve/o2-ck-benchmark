@@ -699,6 +699,14 @@ document.getElementById('selector-metric-hot').addEventListener('click', e => { 
 document.getElementById('selector-metric-load').addEventListener('click', e => { selectors.metric = 'load'; render(); updateHistory(); });
 document.getElementById('selector-metric-size').addEventListener('click', e => { selectors.metric = 'size'; render(); updateHistory(); });
 
+// Never present run 1 as definitely cold when the privileged OS cache-drop
+// failed. The raw timing samples remain selectable, but the labels carry the
+// evidence status emitted by the benchmark runner.
+if (!(typeof dataset_meta !== 'undefined' && dataset_meta.os_page_cache_dropped === true)) {
+    document.getElementById('selector-metric-cold').textContent = 'Run 1 (warm possible)';
+    document.getElementById('selector-metric-hot').textContent = 'Runs 2–5';
+}
+
 selectors.queries = [...data[0].result.keys()].map(k => true);
 
 function updateSelectors() {

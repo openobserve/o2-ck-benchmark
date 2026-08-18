@@ -17,40 +17,49 @@ use tokio::sync::Semaphore;
 
 mod templates;
 
-/// Which backend(s) to ship the generated logs to.
+/// Which benchmark backend(s) to ship the generated logs to.
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 enum Target {
-    /// OpenObserve only
-    Openobserve,
+    /// All three backends from the same generated batch
+    All,
     /// ClickHouse only
     Clickhouse,
-    /// Both backends, from the same generated batch
-    Both,
+    /// OpenObserve with ZO_FILE_FORMAT=parquet
+    O2Parquet,
+    /// OpenObserve with ZO_FILE_FORMAT=vortex
+    O2Vortex,
 }
 
 impl Target {
-    fn openobserve(self) -> bool {
-        matches!(self, Target::Openobserve | Target::Both)
+    fn o2_parquet(self) -> bool {
+        matches!(self, Target::O2Parquet | Target::All)
+    }
+    fn o2_vortex(self) -> bool {
+        matches!(self, Target::O2Vortex | Target::All)
     }
     fn clickhouse(self) -> bool {
-        matches!(self, Target::Clickhouse | Target::Both)
+        matches!(self, Target::Clickhouse | Target::All)
     }
 }
 
 #[derive(Parser, Debug, Clone)]
 #[command(
     name = "benchmark-data",
-    about = "Generate k8s-style JSON logs and ship them to OpenObserve and/or ClickHouse",
+    about = "Generate k8s-style JSON logs and ship them to ClickHouse, O2-Parquet, and O2-Vortex",
     version
 )]
 struct Args {
     /// Which backend(s) to write to
-    #[arg(long, value_enum, default_value_t = Target::Both)]
+    #[arg(long, value_enum, default_value_t = Target::All)]
     target: Target,
 
-    /// OpenObserve base URL (no trailing slash needed)
+    /// O2-Parquet base URL (no trailing slash needed)
     #[arg(long, default_value = "http://localhost:5080")]
-    o2_url: String,
+    o2_parquet_url: String,
+
+    /// O2-Vortex base URL (no trailing slash needed)
+    #[arg(long, default_value = "http://localhost:5090")]
+    o2_vortex_url: String,
 
     /// Organization id
     #[arg(long, default_value = "default")]
@@ -88,7 +97,13 @@ struct Args {
     #[arg(long, default_value_t = 100_000_000)]
     total: usize,
 
-    /// Records per HTTP request (one bulk JSON array)
+    /// First record timestamp in microseconds since Unix epoch. Defaults to the
+    /// current time. A recent, already-closed hour lets O2 finish full compaction
+    /// and build external bloom files without changing its ingest-age policy.
+    #[arg(long)]
+    start_timestamp_us: Option<u64>,
+
+    /// Records per HTTP request (one NDJSON body)
     #[arg(long, default_value_t = 8_000)]
     batch_size: usize,
 
@@ -194,6 +209,56 @@ fn gzip(body: &[u8]) -> Vec<u8> {
     let mut enc = GzEncoder::new(Vec::with_capacity(body.len() / 4), Compression::fast());
     enc.write_all(body).expect("gzip write");
     enc.finish().expect("gzip finish")
+}
+
+/// O2's bulk ingest endpoint can return HTTP 200 while reporting rejected
+/// records in the JSON body (for example, when timestamps exceed the ingest
+/// lookback). Treat the batch as accepted only when every row succeeded.
+fn validate_o2_ingest_body(
+    backend: &str,
+    body: &str,
+    expected: usize,
+) -> std::result::Result<(), String> {
+    let response: Value = serde_json::from_str(body)
+        .map_err(|e| format!("{backend} invalid ingest response: {e}; body={body}"))?;
+    let statuses = response
+        .get("status")
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("{backend} ingest response has no status array: {body}"))?;
+
+    let mut successful = 0_u64;
+    let mut failed = 0_u64;
+    for status in statuses {
+        successful += status
+            .get("successful")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| format!("{backend} ingest status has no successful count: {body}"))?;
+        failed += status
+            .get("failed")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| format!("{backend} ingest status has no failed count: {body}"))?;
+    }
+
+    if failed != 0 || successful != expected as u64 {
+        return Err(format!(
+            "{backend} ingest rejected rows: successful={successful} failed={failed} expected={expected}; body={body}"
+        ));
+    }
+    Ok(())
+}
+
+async fn validate_o2_response(
+    backend: &str,
+    response: Result<reqwest::Response, reqwest::Error>,
+    expected: usize,
+) -> std::result::Result<(), String> {
+    let response = response.map_err(|e| format!("{backend} {e}"))?;
+    let http_status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !http_status.is_success() {
+        return Err(format!("{backend} {http_status} {body}"));
+    }
+    validate_o2_ingest_body(backend, &body, expected)
 }
 
 fn pick<'a, T>(rng: &mut ChaCha8Rng, xs: &'a [T]) -> &'a T {
@@ -425,14 +490,16 @@ fn make_batch(
         .collect()
 }
 
-/// Everything a single batch send needs: the HTTP client, both sink
+/// Everything a single batch send needs: the HTTP client, all sink
 /// endpoints/credentials, the generation parameters, and the shared progress
 /// counters. Held behind an `Arc` and shared across every spawned task.
 struct Sink {
     client: reqwest::Client,
-    oo_endpoint: Arc<String>,
+    o2_parquet_endpoint: Arc<String>,
+    o2_parquet_enabled: bool,
+    o2_vortex_endpoint: Arc<String>,
+    o2_vortex_enabled: bool,
     oo_auth: Arc<String>,
-    oo_enabled: bool,
     ch_base: Arc<String>,
     ch_insert: Arc<String>,
     ch_user: Arc<String>,
@@ -446,7 +513,8 @@ struct Sink {
     ja3_universe: usize,
     sent: Arc<AtomicU64>,
     failed: Arc<AtomicU64>,
-    oo_failed: Arc<AtomicU64>,
+    o2_parquet_failed: Arc<AtomicU64>,
+    o2_vortex_failed: Arc<AtomicU64>,
     ch_failed: Arc<AtomicU64>,
     bytes_ok: Arc<AtomicU64>,
 }
@@ -462,18 +530,14 @@ impl Sink {
         let trace_universe = self.trace_universe;
         let ip_universe = self.ip_universe;
         let ja3_universe = self.ja3_universe;
-        let oo_enabled = self.oo_enabled;
-        let ch_enabled = self.ch_enabled;
         let compress = self.compress;
 
         // Per-record seed keeps content reproducible regardless of completion
         // order or batch size. The global row index also drives _timestamp.
         // Generating the payload inside spawn_blocking lets tokio worker threads
         // run batch generation in parallel with in-flight HTTP sends. Each record
-        // is serialized ONCE; the two HTTP bodies — a JSON array (OpenObserve) and
-        // newline-delimited rows (ClickHouse JSONEachRow) — are assembled from the
-        // same per-record bytes, so dual-write pays no double-serialization cost.
-        let (oo_body, ch_body, raw_len) = tokio::task::spawn_blocking(move || {
+        // is serialized ONCE and all three backends share the same NDJSON body.
+        let (body, raw_len) = tokio::task::spawn_blocking(move || {
             let payload = make_batch(
                 seed,
                 start_record_idx,
@@ -488,73 +552,62 @@ impl Sink {
                 .map(|rec| serde_json::to_vec(rec).expect("serialize record"))
                 .collect();
             let total_bytes: usize = rows.iter().map(|r| r.len()).sum();
-            let oo = if oo_enabled {
-                let mut buf = Vec::with_capacity(total_bytes + rows.len() + 1);
-                buf.push(b'[');
-                for (i, r) in rows.iter().enumerate() {
-                    if i > 0 {
-                        buf.push(b',');
-                    }
-                    buf.extend_from_slice(r);
-                }
-                buf.push(b']');
-                Some(buf)
-            } else {
-                None
-            };
-            let ch = if ch_enabled {
-                let mut buf = Vec::with_capacity(total_bytes + rows.len());
-                for r in &rows {
-                    buf.extend_from_slice(r);
-                    buf.push(b'\n');
-                }
-                Some(buf)
-            } else {
-                None
-            };
-            // Raw (uncompressed) volume for this batch — NDJSON preferred, else
-            // the JSON array. This is the logical ingest volume the MB/s stat
-            // reports, independent of on-the-wire compression.
-            let raw_len = ch
-                .as_ref()
-                .map(|b| b.len())
-                .or_else(|| oo.as_ref().map(|b| b.len()))
-                .unwrap_or(0) as u64;
+            let mut body = Vec::with_capacity(total_bytes + rows.len());
+            for row in &rows {
+                body.extend_from_slice(row);
+                body.push(b'\n');
+            }
+            // Logical ingest volume counted once regardless of fan-out target.
+            let raw_len = body.len() as u64;
             // Compress on the worker thread (CPU work overlaps in-flight sends).
-            let (oo, ch) = if compress {
-                (oo.as_deref().map(gzip), ch.as_deref().map(gzip))
-            } else {
-                (oo, ch)
-            };
-            (oo, ch, raw_len)
+            let body = if compress { gzip(&body) } else { body };
+            (body, raw_len)
         })
         .await
         .expect("batch generation task panicked");
 
-        // Fire both sinks concurrently; each returns Ok(()) or an error string.
-        let oo_fut = async {
-            let Some(body) = oo_body else { return Ok(()) };
+        // Bytes is reference-counted, so all three requests share the exact same
+        // compressed or uncompressed NDJSON allocation without copying it.
+        let body = bytes::Bytes::from(body);
+        let parquet_body = body.clone();
+        let vortex_body = body.clone();
+        let ch_body = body;
+
+        // Fire all enabled sinks concurrently; each returns Ok(()) or an error.
+        let o2_parquet_fut = async {
+            if !self.o2_parquet_enabled {
+                return Ok(());
+            }
             let mut req = self
                 .client
-                .post(self.oo_endpoint.as_str())
+                .post(self.o2_parquet_endpoint.as_str())
                 .header(reqwest::header::AUTHORIZATION, self.oo_auth.as_str())
-                .header(reqwest::header::CONTENT_TYPE, "application/json");
+                .header(reqwest::header::CONTENT_TYPE, "application/x-ndjson");
             if compress {
                 req = req.header(reqwest::header::CONTENT_ENCODING, "gzip");
             }
-            let res = req.body(body).send().await;
-            match res {
-                Ok(r) if r.status().is_success() => Ok(()),
-                Ok(r) => {
-                    let status = r.status();
-                    let b = r.text().await.unwrap_or_default();
-                    Err(format!("openobserve {status} {b}"))
-                }
-                Err(e) => Err(format!("openobserve {e}")),
+            let res = req.body(parquet_body).send().await;
+            validate_o2_response("o2-parquet", res, this_batch).await
+        };
+        let o2_vortex_fut = async {
+            if !self.o2_vortex_enabled {
+                return Ok(());
             }
+            let mut req = self
+                .client
+                .post(self.o2_vortex_endpoint.as_str())
+                .header(reqwest::header::AUTHORIZATION, self.oo_auth.as_str())
+                .header(reqwest::header::CONTENT_TYPE, "application/x-ndjson");
+            if compress {
+                req = req.header(reqwest::header::CONTENT_ENCODING, "gzip");
+            }
+            let res = req.body(vortex_body).send().await;
+            validate_o2_response("o2-vortex", res, this_batch).await
         };
         let ch_fut = async {
-            let Some(body) = ch_body else { return Ok(()) };
+            if !self.ch_enabled {
+                return Ok(());
+            }
             let mut req = self
                 .client
                 .post(self.ch_base.as_str())
@@ -565,7 +618,7 @@ impl Sink {
             if compress {
                 req = req.header(reqwest::header::CONTENT_ENCODING, "gzip");
             }
-            let res = req.body(body).send().await;
+            let res = req.body(ch_body).send().await;
             match res {
                 Ok(r) if r.status().is_success() => Ok(()),
                 Ok(r) => {
@@ -577,16 +630,25 @@ impl Sink {
             }
         };
 
-        let (oo_res, ch_res) = tokio::join!(oo_fut, ch_fut);
+        let (o2_parquet_res, o2_vortex_res, ch_res) =
+            tokio::join!(o2_parquet_fut, o2_vortex_fut, ch_fut);
         let mut ok = true;
-        if let Err(e) = oo_res {
+        if let Err(e) = o2_parquet_res {
             ok = false;
-            self.oo_failed.fetch_add(this_batch as u64, Ordering::Relaxed);
+            self.o2_parquet_failed
+                .fetch_add(this_batch as u64, Ordering::Relaxed);
+            eprintln!("batch {batch_idx} {e}");
+        }
+        if let Err(e) = o2_vortex_res {
+            ok = false;
+            self.o2_vortex_failed
+                .fetch_add(this_batch as u64, Ordering::Relaxed);
             eprintln!("batch {batch_idx} {e}");
         }
         if let Err(e) = ch_res {
             ok = false;
-            self.ch_failed.fetch_add(this_batch as u64, Ordering::Relaxed);
+            self.ch_failed
+                .fetch_add(this_batch as u64, Ordering::Relaxed);
             eprintln!("batch {batch_idx} {e}");
         }
         if ok {
@@ -667,10 +729,13 @@ async fn main() -> Result<()> {
 
     if args.dry_run {
         let mut rng = ChaCha8Rng::seed_from_u64(splitmix64(args.seed));
-        let run_start_timestamp_us = Utc::now().timestamp_micros() as u64;
-        let trace_universe = (args.total as f64 / 7.8).round() as usize;
-        let ip_universe = (args.total as f64 * 0.005127018383746945).round() as usize;
-        let ja3_universe = (args.total as f64 * (6.173306600579376 / 100.0)).round() as usize;
+        let run_start_timestamp_us = args
+            .start_timestamp_us
+            .unwrap_or_else(|| Utc::now().timestamp_micros() as u64);
+        let trace_universe = ((args.total as f64 / 7.8).round() as usize).max(1);
+        let ip_universe = ((args.total as f64 * 0.005127018383746945).round() as usize).max(1);
+        let ja3_universe =
+            ((args.total as f64 * (6.173306600579376 / 100.0)).round() as usize).max(1);
         let sample = make_record(
             &mut rng,
             run_start_timestamp_us,
@@ -682,13 +747,20 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let oo_enabled = args.target.openobserve();
+    let o2_parquet_enabled = args.target.o2_parquet();
+    let o2_vortex_enabled = args.target.o2_vortex();
     let ch_enabled = args.target.clickhouse();
 
-    // OpenObserve sink: bulk JSON-array ingest endpoint + basic auth header.
-    let oo_endpoint = Arc::new(format!(
-        "{}/api/{}/{}/_json",
-        args.o2_url.trim_end_matches('/'),
+    // Both OpenObserve sinks use the same NDJSON body and credentials.
+    let o2_parquet_endpoint = Arc::new(format!(
+        "{}/api/{}/{}/_multi",
+        args.o2_parquet_url.trim_end_matches('/'),
+        args.org,
+        args.stream
+    ));
+    let o2_vortex_endpoint = Arc::new(format!(
+        "{}/api/{}/{}/_multi",
+        args.o2_vortex_url.trim_end_matches('/'),
         args.org,
         args.stream
     ));
@@ -715,8 +787,11 @@ async fn main() -> Result<()> {
 
     let total_batches = args.total.div_ceil(args.batch_size);
     let mut destinations = Vec::new();
-    if oo_enabled {
-        destinations.push(oo_endpoint.to_string());
+    if o2_parquet_enabled {
+        destinations.push(format!("o2-parquet={o2_parquet_endpoint}"));
+    }
+    if o2_vortex_enabled {
+        destinations.push(format!("o2-vortex={o2_vortex_endpoint}"));
     }
     if ch_enabled {
         destinations.push(format!(
@@ -736,10 +811,11 @@ async fn main() -> Result<()> {
 
     let sem = Arc::new(Semaphore::new(args.concurrency));
     // `sent`/`failed` count records delivered to *all* enabled targets vs. records
-    // that failed on at least one target. `oo_failed`/`ch_failed` break it down.
+    // that failed on at least one target. Per-target counters break failures down.
     let sent = Arc::new(AtomicU64::new(0));
     let failed = Arc::new(AtomicU64::new(0));
-    let oo_failed = Arc::new(AtomicU64::new(0));
+    let o2_parquet_failed = Arc::new(AtomicU64::new(0));
+    let o2_vortex_failed = Arc::new(AtomicU64::new(0));
     let ch_failed = Arc::new(AtomicU64::new(0));
     // Raw JSON bytes of successfully-delivered batches (one record's worth counted
     // once, regardless of how many targets it went to) — used for ingest MB/s.
@@ -757,16 +833,20 @@ async fn main() -> Result<()> {
     );
 
     let mut remaining = args.total;
-    let run_start_timestamp_us = Utc::now().timestamp_micros() as u64;
-    let trace_universe = (args.total as f64 / 7.8).round() as usize;
-    let ip_universe = (args.total as f64 * 0.005127018383746945).round() as usize;
-    let ja3_universe = (args.total as f64 * (6.173306600579376 / 100.0)).round() as usize;
+    let run_start_timestamp_us = args
+        .start_timestamp_us
+        .unwrap_or_else(|| Utc::now().timestamp_micros() as u64);
+    let trace_universe = ((args.total as f64 / 7.8).round() as usize).max(1);
+    let ip_universe = ((args.total as f64 * 0.005127018383746945).round() as usize).max(1);
+    let ja3_universe = ((args.total as f64 * (6.173306600579376 / 100.0)).round() as usize).max(1);
 
     let sink = Arc::new(Sink {
         client,
-        oo_endpoint,
+        o2_parquet_endpoint,
+        o2_parquet_enabled,
+        o2_vortex_endpoint,
+        o2_vortex_enabled,
         oo_auth,
-        oo_enabled,
         ch_base,
         ch_insert,
         ch_user,
@@ -780,7 +860,8 @@ async fn main() -> Result<()> {
         ja3_universe,
         sent: sent.clone(),
         failed: failed.clone(),
-        oo_failed: oo_failed.clone(),
+        o2_parquet_failed: o2_parquet_failed.clone(),
+        o2_vortex_failed: o2_vortex_failed.clone(),
         ch_failed: ch_failed.clone(),
         bytes_ok: bytes_ok.clone(),
     });
@@ -828,7 +909,8 @@ async fn main() -> Result<()> {
     let elapsed = start.elapsed().as_secs_f64();
     let sent = sent.load(Ordering::Relaxed);
     let failed = failed.load(Ordering::Relaxed);
-    let oo_failed = oo_failed.load(Ordering::Relaxed);
+    let o2_parquet_failed = o2_parquet_failed.load(Ordering::Relaxed);
+    let o2_vortex_failed = o2_vortex_failed.load(Ordering::Relaxed);
     let ch_failed = ch_failed.load(Ordering::Relaxed);
     let bytes_ok = bytes_ok.load(Ordering::Relaxed);
     let rps = if elapsed > 0.0 {
@@ -842,14 +924,15 @@ async fn main() -> Result<()> {
         0.0
     };
     println!(
-        "done: sent={sent} failed={failed} (openobserve_failed={oo_failed} clickhouse_failed={ch_failed}) elapsed={:.2}s rate={:.0} rec/s ({:.1} MB/s)",
+        "done: sent={sent} failed={failed} (clickhouse_failed={ch_failed} o2_parquet_failed={o2_parquet_failed} o2_vortex_failed={o2_vortex_failed}) elapsed={:.2}s rate={:.0} rec/s ({:.1} MB/s)",
         elapsed, rps, mb_s
     );
 
     if let Some(path) = args.stats_out.as_deref() {
         let targets: Vec<&str> = [
-            oo_enabled.then_some("openobserve"),
             ch_enabled.then_some("clickhouse"),
+            o2_parquet_enabled.then_some("o2-parquet"),
+            o2_vortex_enabled.then_some("o2-vortex"),
         ]
         .into_iter()
         .flatten()
@@ -858,8 +941,9 @@ async fn main() -> Result<()> {
             "targets": targets,
             "records_sent": sent,
             "records_failed": failed,
-            "openobserve_failed": oo_failed,
             "clickhouse_failed": ch_failed,
+            "o2_parquet_failed": o2_parquet_failed,
+            "o2_vortex_failed": o2_vortex_failed,
             "raw_bytes": bytes_ok,
             "elapsed_s": (elapsed * 1000.0).round() / 1000.0,
             "rate_rec_s": rps.round(),
@@ -876,4 +960,30 @@ async fn main() -> Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_o2_ingest_body;
+
+    #[test]
+    fn accepts_complete_o2_batch() {
+        let body = r#"{"code":200,"status":[{"name":"k8s_logs","successful":8000,"failed":0}]}"#;
+        assert!(validate_o2_ingest_body("o2-parquet", body, 8000).is_ok());
+    }
+
+    #[test]
+    fn rejects_record_failure_inside_http_200() {
+        let body = r#"{"code":200,"status":[{"name":"k8s_logs","successful":0,"failed":1,"error":"Too old data"}]}"#;
+        let error = validate_o2_ingest_body("o2-vortex", body, 1).unwrap_err();
+        assert!(error.contains("successful=0 failed=1 expected=1"));
+        assert!(error.contains("Too old data"));
+    }
+
+    #[test]
+    fn rejects_o2_success_count_mismatch() {
+        let body = r#"{"code":200,"status":[{"name":"k8s_logs","successful":7999,"failed":0}]}"#;
+        let error = validate_o2_ingest_body("o2-parquet", body, 8000).unwrap_err();
+        assert!(error.contains("successful=7999 failed=0 expected=8000"));
+    }
 }

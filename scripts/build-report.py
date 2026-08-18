@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Generate data.generated.js for the ClickBench-style results page (index.html).
 
-Reads results/{openobserve,clickhouse}.json (+ machine.json, ingest.json) and
+Reads results/{clickhouse,o2-parquet,o2-vortex}.json (+ machine.json,
+ingest.json) and
 writes data.generated.js next to index.html. All report data lives in that file
 (data, queries, query_sections, dataset_meta) so index.html does not need to be
 rewritten on each build.
@@ -15,9 +16,16 @@ import datetime
 import json
 from pathlib import Path
 
+SYSTEMS = ("clickhouse", "o2-parquet", "o2-vortex")
+LABELS = {
+    "clickhouse": "ClickHouse",
+    "o2-parquet": "O2-Parquet",
+    "o2-vortex": "O2-Vortex",
+}
 TAGS = {
-    "openobserve": ["Rust", "log search engine", "parquet", "tantivy"],
     "clickhouse": ["C++", "column-oriented", "ClickHouse derivative"],
+    "o2-parquet": ["Rust", "log search engine", "Parquet", "tantivy"],
+    "o2-vortex": ["Rust", "log search engine", "Vortex", "tantivy"],
 }
 
 
@@ -31,7 +39,7 @@ def main():
     rd, root = Path(args.results), Path(args.root)
 
     systems, per_system = [], {}
-    for name in ("openobserve", "clickhouse"):
+    for name in SYSTEMS:
         f = rd / f"{name}.json"
         if f.exists():
             per_system[name] = json.loads(f.read_text())
@@ -122,12 +130,16 @@ def main():
         dataset_meta["rate_rec_s"] = ingest["rate_rec_s"]
     if ingest.get("rate_mb_s") is not None:
         dataset_meta["rate_mb_s"] = ingest["rate_mb_s"]
+    dataset_meta["os_page_cache_dropped"] = bool(systems) and all(
+        per_system[s].get("os_page_cache_dropped_at_query_start") is True
+        for s in systems
+    )
 
     # Query SQL tooltips (same order as result columns).
     qstrings = []
     for qid in order:
         sqls = " | ".join(
-            f"{'OpenObserve' if s == 'openobserve' else 'ClickHouse'}: {by_sys[s][qid]['sql']}"
+            f"{LABELS[s]}: {by_sys[s][qid]['sql']}"
             for s in systems if qid in by_sys[s] and by_sys[s][qid].get("sql"))
         qstrings.append(sqls)
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the 'find the needle' query benchmark against OpenObserve and ClickHouse.
+"""Run the query benchmark against ClickHouse, O2-Parquet, and O2-Vortex.
 
 For each query in queries/queries.json, the driver:
   1. disables backend result/query caches and drops supported engine caches,
@@ -7,9 +7,9 @@ For each query in queries/queries.json, the driver:
      shape (pure index+scan) and its SELECT * LIMIT 100 shape (`*_rows`
      templates; adds row materialization/transfer, may terminate early),
   3. records server-side latency,
-  4. reports p50 / p95 / p99 across all runs per backend (the OS page cache is
-     dropped once before run 1, so run 1 is cold and the rest are hot; the
-     result page splits these into Cold/Hot, but these percentiles span both).
+  4. reports p50 / p95 / p99 across all runs per backend (the driver attempts
+     to drop the OS page cache once before run 1 and records whether that
+     privileged operation actually succeeded).
 
 Needle values (a real trace_id / span_id / request id / pod) are embedded in
 queries/queries.json so every backend and every machine runs the same query
@@ -35,6 +35,12 @@ from pathlib import Path
 TS_START = 1_780_272_000_000_000
 TS_END = 1_811_808_000_000_000
 BENCH_TABLE = "k8s_logs"
+BACKEND_ORDER = ("clickhouse", "o2-parquet", "o2-vortex")
+BACKEND_LABELS = {
+    "clickhouse": "ClickHouse",
+    "o2-parquet": "O2-Parquet",
+    "o2-vortex": "O2-Vortex",
+}
 
 # OpenObserve reports stream stats (storage/compressed/index sizes) in MiB —
 # it divides raw byte counts by this before serializing (config SIZE_IN_MB).
@@ -58,6 +64,7 @@ def _http(method, url, *, headers=None, body=None, timeout=300):
 # --------------------------------------------------------------------------- #
 class ClickHouse:
     name = "clickhouse"
+    query_key = "ch"
 
     def __init__(self, url, database, table, user, password):
         self.url = url.rstrip("/")
@@ -135,14 +142,17 @@ class ClickHouse:
 # OpenObserve backend
 # --------------------------------------------------------------------------- #
 class OpenObserve:
-    name = "openobserve"
+    query_key = "oo"
 
-    def __init__(self, url, org, stream, username, password):
+    def __init__(self, name, file_format, url, org, stream, username, password, data_dir):
+        self.name = name
+        self.file_format = file_format
         self.url = url.rstrip("/")
         self.org = org
         self.stream = stream
         self.username = username
         self.password = password
+        self.data_dir = data_dir
         raw = f"{username}:{password}".encode()
         self._auth = "Basic " + base64.b64encode(raw).decode()
 
@@ -171,7 +181,7 @@ class OpenObserve:
             body=body,
         )
         if status != 200:
-            raise RuntimeError(f"openobserve {status}: {data[:300]!r}")
+            raise RuntimeError(f"{self.name} {status}: {data[:300]!r}")
         return json.loads(data)
 
     def drop_cache(self):
@@ -186,7 +196,7 @@ class OpenObserve:
         # OpenObserve reports server time in `took` (milliseconds).
         return float(doc.get("took", 0)), doc.get("scan_records", 0)
 
-    def collect_storage(self, data_dir=None):
+    def collect_storage(self):
         """Authoritative sizes from OpenObserve's stream-stats API.
 
         GET /api/{org}/streams/{stream}/schema returns stats.storage_size (raw
@@ -202,13 +212,24 @@ class OpenObserve:
         fails.
         """
         try:
-            return self._collect_storage_api()
+            storage = self._collect_storage_api()
+            # Immediately after an O2 restart, the schema endpoint can briefly
+            # expose a zeroed stats cache even though compacted files already
+            # exist. A co-located benchmark has an authoritative file_list, so
+            # do not turn that startup race into a false row-count mismatch.
+            if (storage.get("rows", 0) == 0 and self.data_dir
+                    and os.path.isdir(self.data_dir)):
+                local = self._collect_storage_local(self.data_dir)
+                if local.get("rows", 0) > 0:
+                    print(f"   {self.name} stream-stats API returned zero rows; "
+                          "using local file_list")
+                    return local
+            return storage
         except Exception as e:
-            import os
-            if data_dir and os.path.isdir(data_dir):
-                print(f"   openobserve stream-stats API failed ({e}); "
+            if self.data_dir and os.path.isdir(self.data_dir):
+                print(f"   {self.name} stream-stats API failed ({e}); "
                       "falling back to local data dir")
-                return self._collect_storage_local(data_dir)
+                return self._collect_storage_local(self.data_dir)
             raise
 
     def _collect_storage_api(self):
@@ -216,11 +237,12 @@ class OpenObserve:
         status, data, _ = _http(
             "GET", endpoint, headers={"Authorization": self._auth})
         if status != 200:
-            raise RuntimeError(f"openobserve {status}: {data[:300]!r}")
+            raise RuntimeError(f"{self.name} {status}: {data[:300]!r}")
         stats = json.loads(data).get("stats", {})
         index_bytes = int(stats.get("index_size", 0) * SIZE_IN_MB)
         return {
             "source": "stream_stats_api",
+            "file_format": self.file_format,
             "files": int(stats.get("file_num", 0)),
             "rows": int(stats.get("doc_num", 0)),
             "data_on_disk": int(stats.get("compressed_size", 0) * SIZE_IN_MB),
@@ -255,6 +277,7 @@ class OpenObserve:
                 if files:
                     return {
                         "source": "file_list",
+                        "file_format": self.file_format,
                         "files": files,
                         "rows": rows,
                         "data_on_disk": compressed,
@@ -263,10 +286,10 @@ class OpenObserve:
                         "indexes": [{"name": "inverted_index (.ttv)",
                                      "type": "tantivy", "bytes": index}],
                     }
-                print("   openobserve file_list empty (data still in WAL?); "
+                print(f"   {self.name} file_list empty (data still in WAL?); "
                       "falling back to filesystem scan")
             except Exception as e:
-                print(f"   openobserve file_list read failed ({e}); "
+                print(f"   {self.name} file_list read failed ({e}); "
                       "falling back to filesystem scan")
 
         # Fallback: sum file sizes by extension (no original_size available).
@@ -280,12 +303,13 @@ class OpenObserve:
                     continue
                 if in_wal:
                     wal_bytes += sz
-                elif f.endswith(".parquet"):
+                elif f.endswith((".parquet", ".vortex")):
                     data_bytes += sz
                 elif f.endswith((".ttv", ".idx", ".fst")):
                     index_bytes += sz
         return {
             "source": "filesystem",
+            "file_format": self.file_format,
             "data_on_disk": data_bytes,
             "index_bytes": index_bytes,
             "wal_bytes": wal_bytes,
@@ -378,37 +402,51 @@ def drop_os_page_cache():
 
     system = platform.system()
     if system == "Darwin":
-        subprocess.run(["sudo", "purge"], check=False)
+        result = subprocess.run(
+            ["sudo", "-n", "purge"], check=False,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
     elif system == "Linux":
         subprocess.run(["sync"], check=False)
-        subprocess.run(
-            ["sudo", "sh", "-c", "echo 3 > /proc/sys/vm/drop_caches"],
-            check=False,
+        result = subprocess.run(
+            ["sudo", "-n", "sh", "-c", "echo 3 > /proc/sys/vm/drop_caches"],
+            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
     else:
         print(f"   (no page-cache drop implemented for {system}; "
               "results may be warm)")
+        return False
+
+    if result.returncode != 0:
+        print("   (OS page-cache drop skipped: passwordless sudo is unavailable; "
+              "first sample may be warm)")
+        return False
+    return True
 
 
 def run_query(backend, sql, runs, size=0):
     samples = []
-    drop_os_page_cache()
+    os_cache_dropped = drop_os_page_cache()
     for _ in range(runs):
         backend.drop_cache()
         ms, _rows = backend.timed(sql, size)
         samples.append(ms)
-    return samples
+    return samples, os_cache_dropped
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--target", choices=["both", "openobserve", "clickhouse"], default="both")
+    ap.add_argument(
+        "--target", choices=BACKEND_ORDER, required=True,
+        help="backend to measure; the runner intentionally accepts one target at a time",
+    )
     ap.add_argument("--queries", default="queries/queries.json")
     ap.add_argument("--runs", type=int, default=5,
                     help="runs per query (1 cold + N-1 hot; page cache dropped once before run 1)")
     ap.add_argument("--out", default="results/summary.md")
     # OpenObserve
-    ap.add_argument("--o2-url", default="http://localhost:5080")
+    ap.add_argument("--o2-parquet-url", default="http://localhost:5080")
+    ap.add_argument("--o2-vortex-url", default="http://localhost:5090")
     ap.add_argument("--org", default="default")
     ap.add_argument("--oo-user", default="root@example.com")
     ap.add_argument("--oo-password", default="Complexpass#123")
@@ -417,19 +455,26 @@ def main():
     ap.add_argument("--ch-database", default="default")
     ap.add_argument("--ch-user", default="default")
     ap.add_argument("--ch-password", default="")
-    ap.add_argument("--oo-data-dir", default="openobserve-data",
-                    help="OpenObserve data dir, for storage measurement")
+    ap.add_argument("--o2-parquet-data-dir", default="openobserve-parquet-data",
+                    help="O2-Parquet data dir, for storage measurement")
+    ap.add_argument("--o2-vortex-data-dir", default="openobserve-vortex-data",
+                    help="O2-Vortex data dir, for storage measurement")
     ap.add_argument("--ingest-stats", default=None,
                     help="path to datagen --stats-out JSON (default <results>/ingest.json)")
     args = ap.parse_args()
 
     backends = []
-    if args.target in ("both", "openobserve"):
-        backends.append(OpenObserve(args.o2_url, args.org, BENCH_TABLE,
-                                    args.oo_user, args.oo_password))
-    if args.target in ("both", "clickhouse"):
+    if args.target == "clickhouse":
         backends.append(ClickHouse(args.ch_url, args.ch_database, BENCH_TABLE,
                                    args.ch_user, args.ch_password))
+    if args.target == "o2-parquet":
+        backends.append(OpenObserve(
+            "o2-parquet", "parquet", args.o2_parquet_url, args.org, BENCH_TABLE,
+            args.oo_user, args.oo_password, args.o2_parquet_data_dir))
+    if args.target == "o2-vortex":
+        backends.append(OpenObserve(
+            "o2-vortex", "vortex", args.o2_vortex_url, args.org, BENCH_TABLE,
+            args.oo_user, args.oo_password, args.o2_vortex_data_dir))
     if not backends:
         sys.exit("no backends enabled")
     for b in backends:
@@ -458,7 +503,7 @@ def main():
             size = 100 if variant == "rows" else 0
             print(f"== {qid}: {qname}")
             for b in backends:
-                key = ("oo" if b.name == "openobserve" else "ch") + suffix
+                key = b.query_key + suffix
                 tmpl = q.get(key)
                 if not tmpl:
                     continue
@@ -467,7 +512,7 @@ def main():
                          "category": q.get("category", ""),
                          "sql_template": tmpl, "sql": sql}
                 try:
-                    samples = run_query(b, sql, args.runs, size)
+                    samples, os_cache_dropped = run_query(b, sql, args.runs, size)
                 except (urllib.error.URLError, RuntimeError) as e:
                     print(f"   {b.name:12s} ERROR: {e}")
                     entry["error"] = str(e)
@@ -480,6 +525,7 @@ def main():
                         "min": min(samples),
                         "max": max(samples),
                         "samples": samples,
+                        "os_page_cache_dropped_before_first_run": os_cache_dropped,
                     })
                     print(f"   {b.name:12s} median={fmt_ms(entry['median'])}  "
                           f"p95={fmt_ms(entry['p95'])}  p99={fmt_ms(entry['p99'])}")
@@ -489,16 +535,20 @@ def main():
     # Persist this run's per-backend results (with storage, collected while this
     # backend's server is up), then (re)build the combined report from whichever
     # backend files exist — so separate single-target runs accumulate into one
-    # OpenObserve-vs-ClickHouse comparison.
+    # three-way comparison.
     for b in backends:
         try:
-            storage = (b.collect_storage(args.oo_data_dir)
-                       if b.name == "openobserve" else b.collect_storage())
+            storage = b.collect_storage()
         except Exception as e:
             print(f"   {b.name:12s} storage collection failed: {e}")
             storage = None
+        completed = [q for q in b.run_entries if "error" not in q]
+        cache_drop_ok = bool(completed) and all(
+            q.get("os_page_cache_dropped_before_first_run", False) for q in completed
+        )
         payload = {"backend": b.name, "runs": args.runs, "table": BENCH_TABLE,
-                   "os_page_cache_dropped_at_query_start": True,
+                   "isolated_run": True,
+                   "os_page_cache_dropped_at_query_start": cache_drop_ok,
                    "storage": storage, "queries": b.run_entries}
         (results_dir / f"{b.name}.json").write_text(json.dumps(payload, indent=2))
 
@@ -510,13 +560,11 @@ def main():
 def build_combined_report(results_dir, out_path, ingest_stats_path=None):
     """Render results/summary.md from whichever per-backend JSON files exist.
 
-    Works whether both engines were benchmarked together (--target both) or in
-    separate isolated runs (--target openobserve, then --target clickhouse): each
-    run drops results/<backend>.json, and this merges all present backends by
-    query id into one OpenObserve-vs-ClickHouse table. Also folds in machine specs (machine.json),
+    Each isolated run drops results/<backend>.json, and this merges all present backends by
+    query id into one three-way table. Also folds in machine specs (machine.json),
     ingest throughput (ingest.json), and per-backend storage / index sizes.
     """
-    order = ["openobserve", "clickhouse"]
+    order = list(BACKEND_ORDER)
     data, names = {}, []
     for name in order:
         f = results_dir / f"{name}.json"
@@ -535,13 +583,18 @@ def build_combined_report(results_dir, out_path, ingest_stats_path=None):
     machine = _load(results_dir / "machine.json")
     ingest = _load(ingest_stats_path) if ingest_stats_path else None
 
-    # Common raw-JSON denominator for index % and compression. OpenObserve's
+    # Common raw-JSON denominator for index % and compression. An OpenObserve
     # `original_size` (from file_list) IS the raw ingested JSON volume and is the
     # preferred source; fall back to datagen's --stats-out raw_bytes if OpenObserve wasn't
-    # measured. Both engines are compared against this single number.
-    oo_storage = (data.get("openobserve") or {}).get("storage") or {}
-    raw_bytes = oo_storage.get("data_uncompressed")
-    raw_source = "OpenObserve original_size"
+    # measured. All backends are compared against this single number.
+    raw_bytes = None
+    raw_source = None
+    for o2_name in ("o2-parquet", "o2-vortex"):
+        o2_storage = (data.get(o2_name) or {}).get("storage") or {}
+        if o2_storage.get("data_uncompressed"):
+            raw_bytes = o2_storage["data_uncompressed"]
+            raw_source = f"{o2_name} original_size"
+            break
     if not raw_bytes and ingest and ingest.get("raw_bytes"):
         raw_bytes = int(ingest["raw_bytes"])
         raw_source = "datagen --stats-out"
@@ -559,14 +612,21 @@ def build_combined_report(results_dir, out_path, ingest_stats_path=None):
             by_id[q["id"]]["b"][name] = q
 
     L = []
-    L.append("# Benchmark results — OpenObserve vs ClickHouse")
+    L.append("# Benchmark results — ClickHouse vs O2-Parquet vs O2-Vortex")
     L.append("")
-    L.append(f"- backends measured: **{', '.join(names)}**"
-             + ("  _(isolated runs — only one server up at a time)_"
-                if len(names) == 2 else ""))
-    L.append(f"- runs per query (1 cold + rest hot; page cache dropped once): **{meta['runs']}**")
+    isolated = all(data[n].get("isolated_run") is True for n in names)
+    L.append(f"- backends measured: **{', '.join(names)}**")
+    if len(names) > 1:
+        L.append("- process isolation recorded by runner: "
+                 + ("**yes** (one target per run)" if isolated else "**not verified**"))
+    cache_drop_ok = all(
+        data[n].get("os_page_cache_dropped_at_query_start") is True for n in names
+    )
+    cache_label = "1 cold + rest hot" if cache_drop_ok else "cache drop not verified; may be warm"
+    L.append(f"- runs per query ({cache_label}): **{meta['runs']}**")
     L.append(f"- table / stream: `{meta['table']}`")
-    L.append("- OS page-cache dropped at each query start: **True**")
+    L.append("- OS page-cache dropped at each query start: "
+             + ("**yes**" if cache_drop_ok else "**no / not verified**"))
     if machine:
         cores = machine.get("cores")
         mem = machine.get("memory_gib")
@@ -580,6 +640,21 @@ def build_combined_report(results_dir, out_path, ingest_stats_path=None):
                  f"in {ingest.get('elapsed_s','?')}s → "
                  f"**{int(ingest.get('rate_rec_s',0)):,} rec/s, "
                  f"{ingest.get('rate_mb_s','?')} MB/s** (→ {tgts})")
+    reported_rows = {
+        n: int(data[n]["storage"]["rows"])
+        for n in names
+        if data[n].get("storage") and data[n]["storage"].get("rows") is not None
+    }
+    if len(names) > 1 and len(reported_rows) != len(names):
+        missing = ", ".join(n for n in names if n not in reported_rows)
+        L.append(f"- dataset row-count check: **incomplete** (missing: {missing})")
+    elif len(reported_rows) > 1:
+        row_text = ", ".join(f"{n}={rows:,}" for n, rows in reported_rows.items())
+        if len(set(reported_rows.values())) == 1:
+            L.append(f"- dataset row-count check: **matched** ({row_text})")
+        else:
+            L.append(f"- dataset row-count check: **MISMATCH — results are not comparable** "
+                     f"({row_text})")
     L.append("")
 
     # ---- Storage & index ----
@@ -589,7 +664,7 @@ def build_combined_report(results_dir, out_path, ingest_stats_path=None):
         if raw_bytes:
             L.append(f"Raw ingested JSON: **{fmt_bytes(raw_bytes)}** "
                      f"(source: {raw_source}) — common denominator for index % and "
-                     f"compression on both engines.")
+                     f"compression on all backends.")
         else:
             L.append("_No raw-JSON size available (OpenObserve not measured and no "
                      "datagen --stats-out); index % / compression use each engine's "
@@ -628,10 +703,10 @@ def build_combined_report(results_dir, out_path, ingest_stats_path=None):
     L.append("## Median latency (lower is better)")
     L.append("")
     head = "| Query | " + " | ".join(n + " median" for n in names) + " |"
-    if len(names) == 2:
-        head += " speedup |"
+    if len(names) > 1:
+        head += " relative result |"
     L.append(head)
-    L.append("|---|" + "---|" * len(names) + ("---|" if len(names) == 2 else ""))
+    L.append("|---|" + "---|" * len(names) + ("---|" if len(names) > 1 else ""))
     for qid in q_order:
         q = by_id[qid]
         # Query cell: name + the actual SQL template run on each backend.
@@ -639,7 +714,7 @@ def build_combined_report(results_dir, out_path, ingest_stats_path=None):
         for n in names:
             e = q["b"].get(n)
             if e and e.get("sql_template"):
-                tag = "OpenObserve" if n == "openobserve" else "ClickHouse"
+                tag = BACKEND_LABELS[n]
                 sqlt = e["sql_template"]
                 qcell += f"<br>`{tag}:` `{sqlt}`"
         cells = [qcell]
@@ -651,11 +726,15 @@ def build_combined_report(results_dir, out_path, ingest_stats_path=None):
             else:
                 meds[n] = b["median"]
                 cells.append(fmt_ms(b["median"]))
-        if len(names) == 2:
-            if len(meds) == 2 and meds["openobserve"] > 0 and meds["clickhouse"] > 0:
-                oo, ch = meds["openobserve"], meds["clickhouse"]
-                cells.append(f"OpenObserve {ch/oo:.1f}× faster" if oo < ch
-                             else f"ClickHouse {oo/ch:.1f}× faster")
+        if len(names) > 1:
+            valid = {n: ms for n, ms in meds.items() if ms > 0}
+            if len(valid) > 1:
+                winner = min(valid, key=valid.get)
+                ratios = [
+                    f"{valid[n] / valid[winner]:.1f}× vs {BACKEND_LABELS[n]}"
+                    for n in names if n in valid and n != winner
+                ]
+                cells.append(f"**{BACKEND_LABELS[winner]} fastest** (" + ", ".join(ratios) + ")")
             else:
                 cells.append("-")
         L.append("| " + " | ".join(cells) + " |")

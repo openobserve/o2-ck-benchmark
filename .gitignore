@@ -18,6 +18,8 @@ volumes/
 .volumes/
 clickhouse-data/
 openobserve-data/
+openobserve-parquet-data/
+openobserve-vortex-data/
 minio-data/
 # ClickHouse standalone-binary scratch dirs that land in cwd
 preprocessed_configs/

@@ -18,7 +18,7 @@ TCP_PORT="${CH_TCP_PORT:-9000}"
 
 if [[ ! -x "$BIN" && -z "$(command -v "$BIN" 2>/dev/null || true)" ]]; then
   echo "ClickHouse binary not found at '$BIN'." >&2
-  echo "Install it with:  (cd bin && curl -fsSL https://clickhouse.com/ | sh)" >&2
+  echo "Install the pinned benchmark version with: scripts/install.sh clickhouse" >&2
   exit 1
 fi
 
