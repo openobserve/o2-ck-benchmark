@@ -110,15 +110,15 @@ the default target and is written explicitly here for clarity:
 cd datagen
 cargo build --release
 START_TIMESTAMP_US="$(python3 -c 'import time; print((int(time.time()) // 3600 - 2) * 3600 * 1_000_000)')"
-./target/release/benchmark-data \
+cd ..
+./datagen/target/release/benchmark-data \
   --target all \
-  --total 100000000 \
+  --total 1000000000 \
   --start-timestamp-us "$START_TIMESTAMP_US" \
   --o2-parquet-url http://127.0.0.1:5080 \
   --o2-vortex-url http://127.0.0.1:5090 \
   --ch-url http://127.0.0.1:8123 \
-  --stats-out ../results/ingest.json
-cd ..
+  --stats-out ./results/ingest.json
 ```
 
 `records_sent` advances only when every enabled backend accepted a batch. The
