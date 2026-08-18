@@ -97,9 +97,10 @@ struct Args {
     #[arg(long, default_value_t = 100_000_000)]
     total: usize,
 
-    /// First record timestamp in microseconds since Unix epoch. Defaults to the
-    /// current time. A recent, already-closed hour lets O2 finish full compaction
-    /// and build external bloom files without changing its ingest-age policy.
+    /// Event-time anchor in microseconds since Unix epoch. Defaults to the
+    /// current time. Each batch advances this anchor by the generator's actual
+    /// wall-clock elapsed time, so a multi-hour ingest produces a multi-hour
+    /// dataset without aging out of O2's ingest window.
     #[arg(long)]
     start_timestamp_us: Option<u64>,
 
@@ -470,7 +471,7 @@ fn make_batch(
     seed: u64,
     start_record_idx: u64,
     size: usize,
-    run_start_timestamp_us: u64,
+    batch_timestamp_us: u64,
     trace_universe: usize,
     ip_universe: usize,
     ja3_universe: usize,
@@ -481,13 +482,18 @@ fn make_batch(
             let mut rng = ChaCha8Rng::seed_from_u64(splitmix64(seed ^ record_idx));
             make_record(
                 &mut rng,
-                run_start_timestamp_us.wrapping_add(record_idx),
+                batch_timestamp_us.saturating_add(i as u64),
                 trace_universe,
                 ip_universe,
                 ja3_universe,
             )
         })
         .collect()
+}
+
+fn timestamp_from_elapsed(anchor_us: u64, elapsed: Duration) -> u64 {
+    let elapsed_us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+    anchor_us.saturating_add(elapsed_us)
 }
 
 /// Everything a single batch send needs: the HTTP client, all sink
@@ -508,6 +514,7 @@ struct Sink {
     compress: bool,
     seed: u64,
     run_start_timestamp_us: u64,
+    run_started_at: Instant,
     trace_universe: usize,
     ip_universe: usize,
     ja3_universe: usize,
@@ -517,6 +524,8 @@ struct Sink {
     o2_vortex_failed: Arc<AtomicU64>,
     ch_failed: Arc<AtomicU64>,
     bytes_ok: Arc<AtomicU64>,
+    timestamp_min_us: Arc<AtomicU64>,
+    timestamp_max_us: Arc<AtomicU64>,
 }
 
 impl Sink {
@@ -526,14 +535,17 @@ impl Sink {
     /// the batch.
     async fn ship(&self, batch_idx: usize, start_record_idx: u64, this_batch: usize) -> bool {
         let seed = self.seed;
-        let run_start_timestamp_us = self.run_start_timestamp_us;
+        let batch_timestamp_us =
+            timestamp_from_elapsed(self.run_start_timestamp_us, self.run_started_at.elapsed());
         let trace_universe = self.trace_universe;
         let ip_universe = self.ip_universe;
         let ja3_universe = self.ja3_universe;
         let compress = self.compress;
 
-        // Per-record seed keeps content reproducible regardless of completion
-        // order or batch size. The global row index also drives _timestamp.
+        // Per-record seed keeps non-time content reproducible regardless of
+        // completion order or batch size. Event time follows actual ingest
+        // duration: each batch uses the elapsed wall clock from the run's anchor,
+        // and rows inside that batch are separated by one microsecond.
         // Generating the payload inside spawn_blocking lets tokio worker threads
         // run batch generation in parallel with in-flight HTTP sends. Each record
         // is serialized ONCE and all three backends share the same NDJSON body.
@@ -542,7 +554,7 @@ impl Sink {
                 seed,
                 start_record_idx,
                 this_batch,
-                run_start_timestamp_us,
+                batch_timestamp_us,
                 trace_universe,
                 ip_universe,
                 ja3_universe,
@@ -654,6 +666,12 @@ impl Sink {
         if ok {
             self.sent.fetch_add(this_batch as u64, Ordering::Relaxed);
             self.bytes_ok.fetch_add(raw_len, Ordering::Relaxed);
+            self.timestamp_min_us
+                .fetch_min(batch_timestamp_us, Ordering::Relaxed);
+            self.timestamp_max_us.fetch_max(
+                batch_timestamp_us.saturating_add(this_batch.saturating_sub(1) as u64),
+                Ordering::Relaxed,
+            );
         } else {
             self.failed.fetch_add(this_batch as u64, Ordering::Relaxed);
         }
@@ -820,6 +838,8 @@ async fn main() -> Result<()> {
     // Raw JSON bytes of successfully-delivered batches (one record's worth counted
     // once, regardless of how many targets it went to) — used for ingest MB/s.
     let bytes_ok = Arc::new(AtomicU64::new(0));
+    let timestamp_min_us = Arc::new(AtomicU64::new(u64::MAX));
+    let timestamp_max_us = Arc::new(AtomicU64::new(0));
     let start = Instant::now();
     let mut handles = Vec::with_capacity(total_batches);
 
@@ -836,6 +856,10 @@ async fn main() -> Result<()> {
     let run_start_timestamp_us = args
         .start_timestamp_us
         .unwrap_or_else(|| Utc::now().timestamp_micros() as u64);
+    println!(
+        "timestamp model: anchor={}us + actual wall-clock elapsed per batch",
+        run_start_timestamp_us
+    );
     let trace_universe = ((args.total as f64 / 7.8).round() as usize).max(1);
     let ip_universe = ((args.total as f64 * 0.005127018383746945).round() as usize).max(1);
     let ja3_universe = ((args.total as f64 * (6.173306600579376 / 100.0)).round() as usize).max(1);
@@ -855,6 +879,7 @@ async fn main() -> Result<()> {
         compress: args.compress,
         seed: args.seed,
         run_start_timestamp_us,
+        run_started_at: start,
         trace_universe,
         ip_universe,
         ja3_universe,
@@ -864,6 +889,8 @@ async fn main() -> Result<()> {
         o2_vortex_failed: o2_vortex_failed.clone(),
         ch_failed: ch_failed.clone(),
         bytes_ok: bytes_ok.clone(),
+        timestamp_min_us: timestamp_min_us.clone(),
+        timestamp_max_us: timestamp_max_us.clone(),
     });
 
     // Prime the stream BEFORE fanning out. Batch 0 holds the global-minimum
@@ -913,6 +940,10 @@ async fn main() -> Result<()> {
     let o2_vortex_failed = o2_vortex_failed.load(Ordering::Relaxed);
     let ch_failed = ch_failed.load(Ordering::Relaxed);
     let bytes_ok = bytes_ok.load(Ordering::Relaxed);
+    let timestamp_min_us = timestamp_min_us.load(Ordering::Relaxed);
+    let timestamp_max_us = timestamp_max_us.load(Ordering::Relaxed);
+    let timestamp_span_s = (timestamp_min_us != u64::MAX && timestamp_max_us >= timestamp_min_us)
+        .then(|| (timestamp_max_us - timestamp_min_us) as f64 / 1_000_000.0);
     let rps = if elapsed > 0.0 {
         sent as f64 / elapsed
     } else {
@@ -927,6 +958,9 @@ async fn main() -> Result<()> {
         "done: sent={sent} failed={failed} (clickhouse_failed={ch_failed} o2_parquet_failed={o2_parquet_failed} o2_vortex_failed={o2_vortex_failed}) elapsed={:.2}s rate={:.0} rec/s ({:.1} MB/s)",
         elapsed, rps, mb_s
     );
+    if let Some(span_s) = timestamp_span_s {
+        println!("event time: min={timestamp_min_us}us max={timestamp_max_us}us span={span_s:.2}s");
+    }
 
     if let Some(path) = args.stats_out.as_deref() {
         let targets: Vec<&str> = [
@@ -945,6 +979,11 @@ async fn main() -> Result<()> {
             "o2_parquet_failed": o2_parquet_failed,
             "o2_vortex_failed": o2_vortex_failed,
             "raw_bytes": bytes_ok,
+            "timestamp_model": "wall_clock_elapsed",
+            "timestamp_anchor_us": run_start_timestamp_us,
+            "timestamp_min_us": (timestamp_min_us != u64::MAX).then_some(timestamp_min_us),
+            "timestamp_max_us": (timestamp_max_us != 0).then_some(timestamp_max_us),
+            "timestamp_span_s": timestamp_span_s.map(|span| (span * 1000.0).round() / 1000.0),
             "elapsed_s": (elapsed * 1000.0).round() / 1000.0,
             "rate_rec_s": rps.round(),
             "rate_mb_s": (mb_s * 100.0).round() / 100.0,
@@ -964,7 +1003,28 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_o2_ingest_body;
+    use std::time::Duration;
+
+    use super::{make_batch, timestamp_from_elapsed, validate_o2_ingest_body};
+
+    #[test]
+    fn timestamp_model_tracks_wall_clock_elapsed() {
+        let anchor = 1_800_000_000_000_000;
+        let six_hours = Duration::from_secs(6 * 60 * 60);
+        assert_eq!(
+            timestamp_from_elapsed(anchor, six_hours),
+            anchor + 6 * 60 * 60 * 1_000_000
+        );
+    }
+
+    #[test]
+    fn rows_are_spread_by_microseconds_within_each_batch() {
+        let batch_anchor = 1_800_000_000_000_000;
+        let rows = make_batch(7, 80_000, 3, batch_anchor, 1, 1, 1);
+        assert_eq!(rows[0]["_timestamp"].as_u64(), Some(batch_anchor));
+        assert_eq!(rows[1]["_timestamp"].as_u64(), Some(batch_anchor + 1));
+        assert_eq!(rows[2]["_timestamp"].as_u64(), Some(batch_anchor + 2));
+    }
 
     #[test]
     fn accepts_complete_o2_batch() {

@@ -109,7 +109,7 @@ the default target and is written explicitly here for clarity:
 ```bash
 cd datagen
 cargo build --release
-START_TIMESTAMP_US="$(python3 -c 'import time; print((int(time.time()) // 3600 - 2) * 3600 * 1_000_000)')"
+START_TIMESTAMP_US="$(python3 -c 'import time; print((int(time.time()) // 3600 - 1) * 3600 * 1_000_000)')"
 cd ..
 ./datagen/target/release/benchmark-data \
   --target all \
@@ -138,10 +138,14 @@ sqlite3 openobserve-vortex-data/db/metadata.sqlite \
   "SELECT sum(records) FROM file_list WHERE stream='default/logs/k8s_logs';"
 ```
 
-The generated start time is the beginning of the hour two hours ago. It remains
-inside O2's normal ingest-age window while belonging to an already closed hour,
-so O2 can complete full compaction and build external `trace_id` bloom files
-without changing its normal ingest-age policy.
+The timestamp anchor is the beginning of the previous hour. Every later
+batch adds the generator's actual monotonic elapsed time to that anchor. A
+six-hour ingest therefore produces roughly six hours of event time while
+remaining at a constant one-to-two-hour lag behind the server, inside O2's
+normal five-hour ingest window. Completed hours can be fully compacted and get
+their external `trace_id` bloom files without changing the ingest-age policy.
+Rows inside one batch remain one microsecond apart, and the same byte-identical
+NDJSON body is sent to all three backends.
 It also sets `ZO_COMPACT_DELETE_FILES_DELAY_MINUTES=10`, reducing O2's v0.92.2
 default delayed-deletion window from 120 minutes to 10 minutes. Compacted input
 files become eligible for physical deletion after that delay, limiting peak
