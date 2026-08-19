@@ -412,7 +412,7 @@
 
   <figure>
     <svg width="100%" viewBox="0 0 680 320" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Total latency of 19 queries across three engines">
-      <text x="36" y="34" font-family="sans-serif" font-size="15" font-weight="600" fill="#1a1a17">Total warm latency, all 19 queries, one billion log records</text>
+      <text x="36" y="34" font-family="sans-serif" font-size="15" font-weight="600" fill="#1a1a17">Total hot latency, all 19 queries, one billion log records</text>
       <text x="36" y="56" font-family="sans-serif" font-size="12" fill="#8a8a82">Same data · same 19 queries · frozen dataset · one dedicated node per engine · caches off</text>
 
       <rect x="190" y="86" width="450.0" height="44" rx="3" fill="#c14920" opacity="0.92"/>
@@ -436,7 +436,7 @@
       <text x="36" y="294" font-family="sans-serif" font-size="11" fill="#8a8a82">ClickHouse 26.7.3.19 · OpenObserve v0.92.2 · i8g.2xlarge · 1,000,000,000 records · 2 TiB raw NDJSON</text>
       <text x="36" y="310" font-family="sans-serif" font-size="11" fill="#8a8a82">OpenObserve at ZO_COMPACT_MAX_FILE_SIZE=10240; bar lengths to real scale</text>
     </svg>
-    <figcaption>Figure 1 · The whole suite, warm, after the compaction change. Bar lengths to real scale.</figcaption>
+    <figcaption>Figure 1 · The whole suite, hot, after the compaction change. Bar lengths to real scale.</figcaption>
   </figure>
 
   <h2>The setup</h2>
@@ -448,7 +448,7 @@
     <li><strong>Data:</strong> 1,000,000,000 records, 2,199 GB of raw NDJSON, spanning ~4h13m of event time, 27 columns of Kubernetes-shaped log lines</li>
     <li><strong>Ingestion:</strong> one fan-out pass — the generator serializes each record once and posts the same bytes to <code>/_multi</code> on both OpenObserve instances and <code>JSONEachRow</code> on ClickHouse. 16,666 s (4h37m) of wall clock, 60,002 rec/s, 128.1 MB/s. Then stopped</li>
     <li><strong>Queries:</strong> 19 — 8 indexed <code>count()</code>, 3 full-scan aggregations, 8 <code>SELECT * … ORDER BY _timestamp DESC LIMIT 100</code> row fetches. Each expressed natively per engine over an identical, absolutely pinned time window</li>
-    <li><strong>Runs:</strong> 5 per query. The OS page cache is dropped on the backend node itself (<code>sync; echo 3 &gt; /proc/sys/vm/drop_caches</code>) immediately before that backend's pass, so run 1 is <em>cold</em>; <em>warm</em> is <code>min(run 2, run 3)</code>. The dataset is 674 GB to 1 TB against 64 GiB of RAM, so the cache can hold only a small fraction of it in any case</li>
+    <li><strong>Runs:</strong> 5 per query. The OS page cache is dropped on the backend node itself (<code>sync; echo 3 &gt; /proc/sys/vm/drop_caches</code>) immediately before that backend's pass, so run 1 is <em>cold</em>; <em>hot</em> is <code>min(run 2, run 3)</code>. The dataset is 674 GB to 1 TB against 64 GiB of RAM, so the cache can hold only a small fraction of it in any case</li>
     <li><strong>Caches:</strong> ClickHouse <code>enable_filesystem_cache=0</code>; OpenObserve <code>use_cache=false</code> as a URL parameter, which is the only place that flag is honoured</li>
   </ul>
 
@@ -531,7 +531,7 @@
 
   <table>
     <thead>
-      <tr><th>Round 1, O2 · Parquet, warm</th><th><code>trace_id</code></th><th><code>span_id</code></th><th>rare token</th><th>common token</th><th>container + rare</th><th><code>pod_name</code></th></tr>
+      <tr><th>Round 1, O2 · Parquet, hot</th><th><code>trace_id</code></th><th><code>span_id</code></th><th>rare token</th><th>common token</th><th>container + rare</th><th><code>pod_name</code></th></tr>
     </thead>
     <tbody>
       <tr><td>ms</td><td>97</td><td>96</td><td>96</td><td>96</td><td>97</td><td>100</td></tr>
@@ -619,7 +619,7 @@
       <text x="444" y="179" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">pod_name</text>
       <rect x="452" y="169" width="30.0" height="14" rx="2" fill="#185fa5" opacity="0.92"/>
       <text x="610" y="179" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">27</text>
-      <text x="0" y="198" font-family="sans-serif" font-size="10.5" fill="#8a8a82">O2 · Parquet, indexed count() queries, warm. Both panels share one scale.</text>
+      <text x="0" y="198" font-family="sans-serif" font-size="10.5" fill="#8a8a82">O2 · Parquet, indexed count() queries, hot. Both panels share one scale.</text>
     </svg>
     <figcaption>Figure 3 · The same eight indexed <code>count()</code> queries, before and after. Both panels share one scale.</figcaption>
   </figure>
@@ -671,7 +671,7 @@
 
   <figure>
     <svg width="100%" viewBox="0 0 680 178" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="The one query that got slower">
-      <text x="0" y="12" font-family="sans-serif" font-size="12" font-weight="700" fill="#1a1a17">SELECT * WHERE kubernetes_pod_name = … ORDER BY _timestamp DESC LIMIT 100 (ms, warm)</text>
+      <text x="0" y="12" font-family="sans-serif" font-size="12" font-weight="700" fill="#1a1a17">SELECT * WHERE kubernetes_pod_name = … ORDER BY _timestamp DESC LIMIT 100 (ms, hot)</text>
       <line x1="0" y1="20" x2="580" y2="20" stroke="#e0d9c8" stroke-width="1"/>
       <text x="112" y="43" text-anchor="end" font-family="sans-serif" font-size="11" fill="#4a4a45">Parquet · 2 GB</text>
       <rect x="120" y="29" width="164.6" height="18" rx="2" fill="#ba7517" opacity="0.92"/>
@@ -694,12 +694,12 @@
     <figcaption>Figure 4 · <code>SELECT *</code> by pod name, top 100 by timestamp. Parquet doubled; Vortex did not.</figcaption>
   </figure>
 
-  <p>Fetching 100 rows by <code>kubernetes_pod_name</code> got <strong>2.0× slower on Parquet</strong> — 321 ms → 654 ms warm, 395 ms → 857 ms cold. It is the only regression in 38 measurements, and it is worth being precise about what the data actually supports:</p>
+  <p>Fetching 100 rows by <code>kubernetes_pod_name</code> got <strong>2.0× slower on Parquet</strong> — 321 ms → 654 ms hot, 395 ms → 857 ms cold. It is the only regression in 38 measurements, and it is worth being precise about what the data actually supports:</p>
 
   <ul>
     <li>It is <strong>Parquet-specific</strong>. The same query, on the same data, with the same 10 GB cap, got <em>faster</em> on Vortex — 114 ms → 103 ms. So the cause sits in the read path, not in compaction itself</li>
     <li>It is <strong>row-fetch-specific</strong>. The <code>pod_name</code> <code>count()</code> query uses the same secondary index over the same rows and improved 3.70×. Only materializing the rows regressed</li>
-    <li>It shows up <strong>cold and warm alike</strong>, at a similar ratio, so it is not a cache artifact</li>
+    <li>It shows up <strong>cold and hot alike</strong>, at a similar ratio, so it is not a cache artifact</li>
   </ul>
 
   <p>The likely mechanism — and this is a hypothesis, not something this run profiled — is that a top-K row fetch has to materialize candidate rows out of whichever files the index points at, and a 10 GB Parquet file makes that unit of work five times larger: a footer five times bigger to deserialize, five times the row groups to seek through, larger column chunks to decompress — all to return 100 rows. Vortex's layout is lazily addressable, so the same lookup does not pay in proportion to file size.</p>
@@ -710,7 +710,7 @@
 
   <h2>Round 2 · head to head</h2>
 
-  <p>Warm medians, in milliseconds, all three systems at their round-2 settings. Bold is the fastest in the row.</p>
+  <p>Hot medians, in milliseconds, all three systems at their round-2 settings. Bold is the fastest in the row.</p>
 
   <h3>1 · Indexed <code>count()</code></h3>
 
@@ -766,7 +766,7 @@
       <tr><th></th><th>ClickHouse</th><th>O2 · Parquet</th><th>O2 · Vortex</th></tr>
     </thead>
     <tbody>
-      <tr><td>Total, 19 queries (warm)</td><td>11,694 ms</td><td>3,487 ms</td><td><strong>2,533 ms</strong></td></tr>
+      <tr><td>Total, 19 queries (hot)</td><td>11,694 ms</td><td>3,487 ms</td><td><strong>2,533 ms</strong></td></tr>
       <tr><td>vs ClickHouse</td><td>—</td><td>3.35×</td><td><strong>4.62×</strong></td></tr>
       <tr><td>Geometric mean per query</td><td>181.9 ms</td><td>66.3 ms</td><td><strong>54.3 ms</strong></td></tr>
       <tr><td>Per-query geometric-mean speedup</td><td>—</td><td>2.74×</td><td><strong>3.35×</strong></td></tr>
@@ -824,7 +824,7 @@
       <text x="424" y="179" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">O2 · Vortex</text>
       <rect x="432" y="169" width="45.2" height="14" rx="2" fill="#0f6e56" opacity="0.92"/>
       <text x="610" y="179" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">598</text>
-      <text x="0" y="212" font-family="sans-serif" font-size="10.5" fill="#8a8a82">Warm medians, round 2. Each panel is scaled to its own maximum.</text>
+      <text x="0" y="212" font-family="sans-serif" font-size="10.5" fill="#8a8a82">Hot medians, round 2. Each panel is scaled to its own maximum.</text>
     </svg>
     <figcaption>Figure 5 · The four queries where ClickHouse is slowest. Each panel scaled to its own maximum.</figcaption>
   </figure>
@@ -856,7 +856,7 @@
       <tr><th></th><th>Parquet</th><th>Vortex</th></tr>
     </thead>
     <tbody>
-      <tr><td>Total, 19 queries (round 2, warm)</td><td>3,487 ms</td><td><strong>2,533 ms</strong></td></tr>
+      <tr><td>Total, 19 queries (round 2, hot)</td><td>3,487 ms</td><td><strong>2,533 ms</strong></td></tr>
       <tr><td><code>count()</code> group, 8 queries</td><td><strong>215 ms</strong></td><td>232 ms</td></tr>
       <tr><td>Aggregation group, 3 queries</td><td>2,158 ms</td><td><strong>1,865 ms</strong></td></tr>
       <tr><td>Row-fetch group, 8 queries</td><td>1,114 ms</td><td><strong>436 ms</strong></td></tr>
@@ -901,7 +901,7 @@
       <li>A fourth node, not under test — a <code>c7g.2xlarge</code> — runs the generator and the benchmark client</li>
       <li>1,000,000,000 records / 2,199 GB of NDJSON, serialized once and posted byte-identically to all three backends in one fan-out pass; a batch counts as sent only when every backend accepted it</li>
       <li>Query window pinned absolutely at 2026-06-01 → 2027-06-01 UTC on both engines — wider than the data, so no engine gets time-pruning the other lacks</li>
-      <li>5 runs per query; the OS page cache is dropped on each backend node before its pass, so run 1 is cold; warm reported as <code>min(run 2, run 3)</code>. The drop <code>run-benchmark.py</code> issues itself lands on the driver and is a no-op for the engine under test — the manual step on the backend node is what makes run 1 cold</li>
+      <li>5 runs per query; the OS page cache is dropped on each backend node before its pass, so run 1 is cold; hot reported as <code>min(run 2, run 3)</code>. The drop <code>run-benchmark.py</code> issues itself lands on the driver and is a no-op for the engine under test — the manual step on the backend node is what makes run 1 cold</li>
       <li>Timing is server-reported on both sides: ClickHouse <code>statistics.elapsed</code>, OpenObserve <code>took</code>. OpenObserve's is whole milliseconds, so sub-30 ms differences are at the resolution limit</li>
       <li>Storage figures are compressed data plus indexes, from <code>system.parts</code> + <code>system.data_skipping_indices</code> and from OpenObserve's stream-stats API respectively</li>
       <li>The ingestion figure is one fan-out pass into all three backends and is not a per-engine ingest benchmark</li>
