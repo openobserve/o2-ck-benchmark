@@ -1,0 +1,917 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>One Billion Log Records, Three Engines — ClickHouse vs OpenObserve on Parquet and Vortex</title>
+<style>
+  :root {
+    --bg: #fff;
+    --bg-soft: #f3eee2;
+    --ink: #1a1a17;
+    --ink-soft: #4a4a45;
+    --ink-mute: #8a8a82;
+    --rule: #e0d9c8;
+    --accent: #c14920;
+    --accent-soft: #f5dccd;
+    --teal: #0f6e56;
+    --teal-soft: #d4ebe2;
+    --amber: #ba7517;
+    --amber-soft: #faeeda;
+    --blue: #185fa5;
+    --code-bg: #2a2823;
+    --code-ink: #e8e2d0;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { font-size: 17px; }
+
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    padding: 0;
+  }
+
+  .container {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 80px 32px 120px;
+  }
+
+  /* Eyebrow / meta */
+  .eyebrow {
+    font-family: system-ui, sans-serif;
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 28px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .eyebrow::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--rule);
+  }
+
+  /* Title */
+  h1 {
+    font-size: 2.6rem;
+    line-height: 1.2;
+    font-weight: 900;
+    letter-spacing: -0.02em;
+    margin-bottom: 32px;
+    color: var(--ink);
+  }
+  h1 .accent {
+    color: var(--accent);
+    font-style: italic;
+    font-weight: 700;
+  }
+
+  /* Lede */
+  .lede {
+    font-size: 1.22rem;
+    line-height: 1.65;
+    color: var(--ink-soft);
+    border-left: 3px solid var(--accent);
+    padding: 4px 0 4px 24px;
+    margin: 40px 0 56px;
+  }
+  .lede strong {
+    color: var(--ink);
+    font-weight: 700;
+  }
+
+  /* Body text */
+  p {
+    margin: 1.1em 0;
+    font-size: 1.0625rem;
+    color: var(--ink);
+  }
+  p strong {
+    font-weight: 700;
+    color: var(--ink);
+    background: linear-gradient(180deg, transparent 60%, var(--amber-soft) 60%);
+    padding: 0 2px;
+  }
+
+  /* Headings */
+  h2 {
+    font-size: 1.85rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    margin: 80px 0 24px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--rule);
+    color: var(--ink);
+    position: relative;
+  }
+  h2::before {
+    content: "§";
+    color: var(--accent);
+    margin-right: 12px;
+    font-style: italic;
+    font-weight: 400;
+  }
+  h3 {
+    font-size: 1.28rem;
+    font-weight: 700;
+    margin: 48px 0 16px;
+    color: var(--ink);
+    font-family: system-ui, sans-serif;
+    letter-spacing: -0.01em;
+  }
+  h3::before {
+    content: "▸ ";
+    color: var(--accent);
+  }
+
+  /* Code */
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.88em;
+    background: var(--bg-soft);
+    padding: 1px 6px;
+    border-radius: 3px;
+    color: var(--ink);
+    border: 1px solid var(--rule);
+  }
+  pre {
+    background: var(--code-bg);
+    color: var(--code-ink);
+    padding: 20px 24px;
+    border-radius: 6px;
+    overflow-x: auto;
+    margin: 24px 0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.9rem;
+    line-height: 1.65;
+  }
+  pre code {
+    background: transparent;
+    border: none;
+    padding: 0;
+    color: inherit;
+  }
+
+  /* Tables */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 28px 0;
+    font-size: 0.95rem;
+    font-family: system-ui, sans-serif;
+  }
+  th {
+    text-align: left;
+    padding: 12px 14px;
+    background: var(--bg-soft);
+    border-bottom: 2px solid var(--ink);
+    font-weight: 600;
+    font-size: 0.85rem;
+    letter-spacing: 0.02em;
+  }
+  td {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--rule);
+  }
+  tbody tr:hover { background: rgba(193, 73, 32, 0.04); }
+  td strong { font-weight: 700; color: var(--accent); }
+  td.err { color: var(--accent); font-weight: 600; }
+
+  /* Pull quote */
+  .pull {
+    margin: 48px -32px;
+    padding: 36px 48px;
+    background: var(--ink);
+    color: var(--bg);
+    font-size: 1.4rem;
+    line-height: 1.45;
+    font-weight: 500;
+    position: relative;
+    border-radius: 4px;
+    font-style: italic;
+  }
+  .pull::before {
+    content: "";
+    position: absolute;
+    left: 48px;
+    top: 0;
+    width: 40px;
+    height: 3px;
+    background: var(--accent);
+  }
+  .pull strong {
+    color: #f5dccd;
+    font-weight: 700;
+    background: none;
+    font-style: normal;
+  }
+
+  /* Figure / chart wrapper */
+  figure {
+    margin: 48px -16px;
+    padding: 32px 24px;
+    background: var(--bg-soft);
+    border-radius: 6px;
+    border: 1px solid var(--rule);
+  }
+  figcaption {
+    font-family: system-ui, sans-serif;
+    font-size: 0.82rem;
+    color: var(--ink-mute);
+    text-align: center;
+    margin-top: 16px;
+    letter-spacing: 0.02em;
+  }
+
+  /* SVG safety */
+  svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+
+  /* List */
+  ul {
+    margin: 1em 0;
+    padding-left: 1.4em;
+  }
+  ul li {
+    margin: 0.5em 0;
+    line-height: 1.7;
+  }
+  ul li::marker { color: var(--accent); }
+
+  /* Footer note */
+  .footnote {
+    margin-top: 64px;
+    padding: 24px 28px;
+    background: var(--bg-soft);
+    border-left: 3px solid var(--ink-mute);
+    font-size: 0.92rem;
+    color: var(--ink-soft);
+  }
+  .footnote strong {
+    color: var(--ink);
+    font-weight: 600;
+    background: none;
+  }
+  .footnote ul {
+    margin: 8px 0 0;
+    padding-left: 1.2em;
+  }
+  .footnote li {
+    margin: 4px 0;
+    line-height: 1.55;
+  }
+
+  /* Divider */
+  hr.divider {
+    border: none;
+    text-align: center;
+    margin: 56px 0;
+    height: 24px;
+  }
+  hr.divider::before {
+    content: "✦  ✦  ✦";
+    color: var(--ink-mute);
+    letter-spacing: 1em;
+    font-size: 0.7rem;
+  }
+
+  /* Chart styles */
+  .bar-chart {
+    margin: 24px 0;
+  }
+
+  /* 2x2 grid for compact comparison */
+  .chart-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px 28px;
+    margin: 12px 0;
+  }
+  .chart-group {
+    min-width: 0;
+  }
+  .chart-group-title {
+    font-family: system-ui, sans-serif;
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: var(--ink);
+    margin: 0 0 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--rule);
+    letter-spacing: 0.01em;
+  }
+  .chart-grid .bar-row {
+    grid-template-columns: 130px 1fr 56px;
+    gap: 10px;
+    margin: 8px 0;
+    font-size: 0.76rem;
+  }
+  .chart-grid .bar-track {
+    height: 22px;
+  }
+  .chart-grid .value {
+    font-size: 0.8rem;
+  }
+
+  .bar-row {
+    display: grid;
+    grid-template-columns: 170px 1fr 70px;
+    align-items: center;
+    gap: 14px;
+    margin: 14px 0;
+    font-family: system-ui, sans-serif;
+    font-size: 0.86rem;
+  }
+  .bar-row .label {
+    color: var(--ink-soft);
+    text-align: right;
+    font-weight: 500;
+  }
+  .bar-row .bar-track {
+    background: var(--bg);
+    border-radius: 3px;
+    height: 32px;
+    position: relative;
+    overflow: hidden;
+    border: 1px solid var(--rule);
+  }
+  .bar-row .bar-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.6s ease;
+  }
+  .bar-row .bar-fill.errbar {
+    background: repeating-linear-gradient(45deg, #c14920, #c14920 6px, #f5dccd 6px, #f5dccd 12px);
+    opacity: 0.55;
+  }
+  .bar-row .value {
+    font-weight: 700;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Legend */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 22px;
+    justify-content: center;
+    font-family: system-ui, sans-serif;
+    font-size: 0.78rem;
+    color: var(--ink-soft);
+    margin-bottom: 18px;
+  }
+  .legend span::before {
+    content: "";
+    display: inline-block;
+    width: 11px;
+    height: 11px;
+    border-radius: 2px;
+    margin-right: 6px;
+    vertical-align: -1px;
+    background: var(--sw);
+  }
+
+  @media (max-width: 640px) {
+    html { font-size: 16px; }
+    .container { padding: 48px 20px 80px; }
+    h1 { font-size: 1.9rem; }
+    h2 { font-size: 1.5rem; }
+    .pull { margin: 36px -20px; padding: 28px 24px; font-size: 1.15rem; }
+    figure { margin: 36px -8px; padding: 20px 12px; }
+    .bar-row { grid-template-columns: 110px 1fr 56px; font-size: 0.78rem; gap: 10px; }
+    .chart-grid { grid-template-columns: 1fr; gap: 28px; }
+    .chart-grid .bar-row { grid-template-columns: 110px 1fr 50px; }
+  }
+</style>
+</head>
+<body>
+<article class="container">
+
+  <div class="eyebrow">OpenObserve · Log Benchmark</div>
+
+  <h1>One Billion Log Records, <span class="accent">Three Engines</span> — ClickHouse vs OpenObserve on Parquet and Vortex</h1>
+
+  <div class="lede">
+    <strong>We generated one billion log records — 2 TiB of NDJSON — serialized each record once, and wrote the identical bytes into ClickHouse and two OpenObserve instances at the same time — each on its own dedicated node. Then we stopped ingestion and ran the same 19 queries against each, measuring one backend at a time.</strong><br><br>
+    Then we ran the whole thing a second time, changing exactly one OpenObserve setting: the compaction target file size, from 2 GB to 10 GB. That one knob was worth more than everything else we tried.
+  </div>
+
+  <p>The contenders are three single-node deployments, one per <code>i8g.2xlarge</code>: <strong>ClickHouse 26.7.3.19, OpenObserve v0.92.2 with <code>ZO_FILE_FORMAT=parquet</code>, and the same OpenObserve binary with <code>ZO_FILE_FORMAT=vortex</code></strong>. Both engines carry a full-text index on the log message and skip/secondary indexes on the same three high-cardinality columns. Query caches are disabled on both sides, and both report their own server-side time, so neither is charged for client overhead the other avoids.</p>
+
+  <figure>
+    <svg width="100%" viewBox="0 0 680 320" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Total latency of 19 queries across three engines">
+      <text x="36" y="34" font-family="sans-serif" font-size="15" font-weight="600" fill="#1a1a17">Total warm latency, all 19 queries, one billion log records</text>
+      <text x="36" y="56" font-family="sans-serif" font-size="12" fill="#8a8a82">Same data · same 19 queries · frozen dataset · one dedicated node per engine · caches off</text>
+
+      <rect x="190" y="86" width="450.0" height="44" rx="3" fill="#c14920" opacity="0.92"/>
+      <text x="182" y="114" text-anchor="end" font-family="sans-serif" font-size="13" font-weight="600" fill="#4a4a45">ClickHouse</text>
+      <text x="632" y="114" text-anchor="end" font-family="sans-serif" font-size="15" font-weight="700" fill="#ffffff">11.69s</text>
+
+      <rect x="190" y="146" width="134.2" height="44" rx="3" fill="#185fa5" opacity="0.92"/>
+      <text x="182" y="174" text-anchor="end" font-family="sans-serif" font-size="13" font-weight="600" fill="#4a4a45">O2 · Parquet</text>
+      <text x="334" y="174" font-family="sans-serif" font-size="15" font-weight="700" fill="#185fa5">3.49s</text>
+
+      <rect x="190" y="206" width="97.5" height="44" rx="3" fill="#0f6e56"/>
+      <text x="182" y="234" text-anchor="end" font-family="sans-serif" font-size="13" font-weight="600" fill="#4a4a45">O2 · Vortex</text>
+      <text x="297" y="234" font-family="sans-serif" font-size="15" font-weight="700" fill="#0f6e56">2.53s</text>
+
+      <line x1="190" y1="266" x2="640" y2="266" stroke="#c8c1ad" stroke-width="1"/>
+
+      <rect x="360" y="200" width="280" height="52" rx="6" fill="#0f6e56"/>
+      <text x="500" y="223" text-anchor="middle" font-family="sans-serif" font-size="16" font-weight="700" fill="#ffffff">4.6× faster than ClickHouse</text>
+      <text x="500" y="243" text-anchor="middle" font-family="sans-serif" font-size="10.5" fill="#d4ebe2">on 0.69× the disk, both sides full-text indexed</text>
+
+      <text x="36" y="294" font-family="sans-serif" font-size="11" fill="#8a8a82">ClickHouse 26.7.3.19 · OpenObserve v0.92.2 · i8g.2xlarge · 1,000,000,000 records · 2 TiB raw NDJSON</text>
+      <text x="36" y="310" font-family="sans-serif" font-size="11" fill="#8a8a82">OpenObserve at ZO_COMPACT_MAX_FILE_SIZE=10240; bar lengths to real scale</text>
+    </svg>
+    <figcaption>Figure 1 · The whole suite, warm, after the compaction change. Bar lengths to real scale.</figcaption>
+  </figure>
+
+  <h2>The setup</h2>
+
+  <ul>
+    <li><strong>Hardware:</strong> one dedicated <code>i8g.2xlarge</code> per backend, data on that node's local NVMe. The nodes run concurrently and share no hardware, so CPU, memory, disk bandwidth and page cache are never contended between engines — only the measurement is serialized, one backend at a time</li>
+    <li><strong>Driver:</strong> a fourth node, not under test — a <code>c7g.2xlarge</code> running the data generator and the benchmark client. Nothing that is being measured also drives the measurement</li>
+    <li><strong>Versions:</strong> ClickHouse <code>26.7.3.19-stable</code>; OpenObserve <code>v0.92.2</code>, two instances differing only in <code>ZO_FILE_FORMAT</code></li>
+    <li><strong>Data:</strong> 1,000,000,000 records, 2,199 GB of raw NDJSON, spanning ~4h13m of event time, 27 columns of Kubernetes-shaped log lines</li>
+    <li><strong>Ingestion:</strong> one fan-out pass — the generator serializes each record once and posts the same bytes to <code>/_multi</code> on both OpenObserve instances and <code>JSONEachRow</code> on ClickHouse. 16,666 s (4h37m) of wall clock, 60,002 rec/s, 128.1 MB/s. Then stopped</li>
+    <li><strong>Queries:</strong> 19 — 8 indexed <code>count()</code>, 3 full-scan aggregations, 8 <code>SELECT * … ORDER BY _timestamp DESC LIMIT 100</code> row fetches. Each expressed natively per engine over an identical, absolutely pinned time window</li>
+    <li><strong>Runs:</strong> 5 per query. The OS page cache is dropped on the backend node itself (<code>sync; echo 3 &gt; /proc/sys/vm/drop_caches</code>) immediately before that backend's pass, so run 1 is <em>cold</em>; <em>warm</em> is <code>min(run 2, run 3)</code>. The dataset is 674 GB to 1 TB against 64 GiB of RAM, so the cache can hold only a small fraction of it in any case</li>
+    <li><strong>Caches:</strong> ClickHouse <code>enable_filesystem_cache=0</code>; OpenObserve <code>use_cache=false</code> as a URL parameter, which is the only place that flag is honoured</li>
+  </ul>
+
+  <h3>Index parity is the hard part</h3>
+
+  <p>A log benchmark is decided by its indexes, so both engines get the same ones:</p>
+
+  <table>
+    <thead>
+      <tr><th>Column</th><th>ClickHouse</th><th>OpenObserve (both formats)</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>message</code></td><td><code>text(tokenizer = splitByNonAlpha)</code></td><td>Tantivy full-text index</td></tr>
+      <tr><td><code>trace_id</code></td><td><code>bloom_filter(0.01)</code></td><td>Tantivy secondary index + external bloom, FPP <code>0.01</code></td></tr>
+      <tr><td><code>span_id</code></td><td><code>bloom_filter(0.01)</code></td><td>Tantivy secondary index</td></tr>
+      <tr><td><code>kubernetes_pod_name</code></td><td><code>bloom_filter(0.01)</code></td><td>Tantivy secondary index</td></tr>
+      <tr><td><code>kubernetes_container_name</code></td><td class="err">none</td><td class="err">none</td></tr>
+    </tbody>
+  </table>
+
+  <p><code>kubernetes_container_name</code> is left unindexed on purpose: it has 8 distinct values, so an index prunes nothing, and indexing it on one side only would be a gift. Parquet's embedded row-group bloom filter is disabled (<code>ZO_BLOOM_FILTER_PARQUET_ENABLED=false</code>) so it cannot become a Parquet-only advantage over Vortex. ClickHouse is ordered by <code>_timestamp</code> alone, so no structured column gets a sort-key advantage either.</p>
+
+  <p><strong>Nothing under test also drives the test.</strong> The generator and the benchmark client run on a fourth node, a <code>c7g.2xlarge</code>. A driver co-resident with a backend would burn CPU on JSON serialization and result parsing on the very box it is timing — and would do so unequally across three engines that return different payload sizes. Keeping it off the measured nodes costs one instance and removes the whole class of problem. Because timing is server-reported on both sides, the network hop between driver and backend is not charged to either engine; the two choices only work together.</p>
+
+  <h3>What this benchmark does not measure</h3>
+
+  <p><strong>Ingestion throughput per engine.</strong> The 16,666-second figure is one fan-out pass feeding all three backends at once, gated by the slowest of them plus the generator. It is a statement that all three received identical data, not three ingest results.</p>
+
+  <p><strong>Time-range pruning.</strong> The query window is a full year wrapped around a 4h13m dataset, so every query touches all of it. Identical for both engines, and the worst case for both — but nothing here rewards partition pruning.</p>
+
+  <p><strong>Concurrency.</strong> Every query is issued serially against an otherwise idle machine.</p>
+
+  <p><strong>Per-query row counts.</strong> The harness reads <code>rows_read</code> (ClickHouse) and <code>scan_records</code> (OpenObserve) on every request but does not persist them, so the recorded results carry latency without the work behind it. The row check that <em>is</em> recorded sits at storage level — <code>system.parts</code> against <code>file_list</code> — and confirms all three backends hold the same 1,000,000,000 rows. Persisting the per-query counts is the first thing to add before the next run.</p>
+
+  <p>One more thing worth stating: <strong>OpenObserve reports <code>took</code> in whole milliseconds.</strong> Below about 30 ms that quantization is a real part of the spread, and a two- or three-millisecond gap in the tables below should be read as a tie, not a win.</p>
+
+  <h2>Storage</h2>
+
+  <p>Taken from each engine's own metastore — <code>system.parts</code> plus <code>system.data_skipping_indices</code> for ClickHouse, the stream-stats API backed by <code>file_list</code> for OpenObserve. Both figures are compressed data <strong>plus</strong> indexes:</p>
+
+  <figure>
+    <svg width="100%" viewBox="0 0 680 152" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Storage footprint">
+      <text x="0" y="12" font-family="sans-serif" font-size="12" font-weight="700" fill="#1a1a17">On-disk size, compressed data + indexes (GB, lower is better)</text>
+      <line x1="0" y1="20" x2="590" y2="20" stroke="#e0d9c8" stroke-width="1"/>
+      <text x="102" y="43" text-anchor="end" font-family="sans-serif" font-size="11" fill="#4a4a45">Raw NDJSON</text>
+      <rect x="110" y="29" width="420.0" height="18" rx="2" fill="#8a8a82" opacity="0.92"/>
+      <text x="538" y="43" font-family="sans-serif" font-size="11" font-weight="700" fill="#1a1a17">2,199 GB</text>
+      <text x="102" y="70" text-anchor="end" font-family="sans-serif" font-size="11" fill="#4a4a45">ClickHouse</text>
+      <rect x="110" y="56" width="196.1" height="18" rx="2" fill="#c14920" opacity="0.92"/>
+      <text x="538" y="70" font-family="sans-serif" font-size="11" font-weight="700" fill="#1a1a17">1,026 GB</text>
+      <text x="102" y="97" text-anchor="end" font-family="sans-serif" font-size="11" fill="#4a4a45">O2 · Parquet</text>
+      <rect x="110" y="83" width="128.6" height="18" rx="2" fill="#185fa5" opacity="0.92"/>
+      <text x="538" y="97" font-family="sans-serif" font-size="11" font-weight="700" fill="#1a1a17">674 GB</text>
+      <text x="102" y="124" text-anchor="end" font-family="sans-serif" font-size="11" fill="#4a4a45">O2 · Vortex</text>
+      <rect x="110" y="110" width="135.7" height="18" rx="2" fill="#0f6e56" opacity="0.92"/>
+      <text x="538" y="124" font-family="sans-serif" font-size="11" font-weight="700" fill="#1a1a17">711 GB</text>
+      <text x="0" y="145" font-family="sans-serif" font-size="10.5" fill="#8a8a82">One billion records. Both engines' figures include their full-text index.</text>
+    </svg>
+    <figcaption>Figure 2 · One billion records on disk, indexes included.</figcaption>
+  </figure>
+
+  <table>
+    <thead>
+      <tr><th>System</th><th>On disk</th><th>Compression vs raw</th><th>vs ClickHouse</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>ClickHouse</td><td>1,026.5 GB</td><td>2.14×</td><td>—</td></tr>
+      <tr><td>O2 · Parquet</td><td><strong>673.5 GB</strong></td><td><strong>3.26×</strong></td><td><strong>0.66×</strong></td></tr>
+      <tr><td>O2 · Vortex</td><td>710.7 GB</td><td>3.09×</td><td>0.69×</td></tr>
+    </tbody>
+  </table>
+
+  <p>OpenObserve stores the same billion records in <strong>a third less space than ClickHouse</strong>, while carrying a Tantivy full-text index that ClickHouse's <code>text()</code> index is the counterpart to. Raising the compaction target to 10 GB grew both OpenObserve footprints by 0.49% — larger merge units produce marginally larger output, and it is noise next to what it does to query latency.</p>
+
+  <h2>Round 1 · stock configuration</h2>
+
+  <p>With <code>ZO_COMPACT_MAX_FILE_SIZE</code> at its 2 GB default, the aggregate looks like a clear OpenObserve win — 11,578 ms across the suite for ClickHouse against 4,663 ms (Parquet) and 4,106 ms (Vortex) — but the per-query record does not. <strong>OpenObserve wins only 9 of 19 queries on Parquet and 10 of 19 on Vortex.</strong> The aggregate is carried by two queries where ClickHouse takes seconds and OpenObserve takes a tenth of one.</p>
+
+  <p>And buried in the round-1 numbers is the most informative result in the whole benchmark — a number that refuses to vary:</p>
+
+  <table>
+    <thead>
+      <tr><th>Round 1, O2 · Parquet, warm</th><th><code>trace_id</code></th><th><code>span_id</code></th><th>rare token</th><th>common token</th><th>container + rare</th><th><code>pod_name</code></th></tr>
+    </thead>
+    <tbody>
+      <tr><td>ms</td><td>97</td><td>96</td><td>96</td><td>96</td><td>97</td><td>100</td></tr>
+    </tbody>
+  </table>
+
+  <p>Six queries with completely different selectivity, hitting three different index types — a bloom-backed ID lookup, a full-text term that matches almost nothing, a full-text term that matches a large fraction of the dataset, a secondary index on a high-cardinality column — and they all answer in 96 to 100 ms.</p>
+
+  <div class="pull">
+    That is not six query costs. It is <strong>one fixed cost, paid before any of them start</strong>, with the actual query work disappearing underneath it.
+  </div>
+
+  <h2>Round 2 · one knob: <code>ZO_COMPACT_MAX_FILE_SIZE=10240</code></h2>
+
+  <p>Same dataset, same queries, same machine. OpenObserve's compaction target file size raised from its 2 GB default to 10 GB — roughly a fifth as many data files, each five times larger. ClickHouse was left untouched and re-measured, which makes it the control.</p>
+
+  <h3>The control first</h3>
+
+  <table>
+    <thead>
+      <tr><th>ClickHouse, unchanged between rounds</th><th>Drift</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Total across 19 queries</td><td>11,578 ms → 11,694 ms (<strong>+1.0%</strong>)</td></tr>
+      <tr><td>Median per-query drift</td><td>1.2%</td></tr>
+      <tr><td>Largest per-query drift</td><td>17.5%, on a 22 ms query</td></tr>
+    </tbody>
+  </table>
+
+  <p>That is the run-to-run noise floor of the whole harness. Every OpenObserve change below sits far outside it.</p>
+
+  <h3>The floor collapses</h3>
+
+  <figure>
+    <svg width="100%" viewBox="0 0 680 206" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Indexed count queries before and after raising the compaction file size">
+      <text x="0" y="12" font-family="sans-serif" font-size="12" font-weight="700" fill="#1a1a17">Round 1 · 2 GB files (ms)</text>
+      <line x1="0" y1="20" x2="322" y2="20" stroke="#e0d9c8" stroke-width="1"/>
+      <text x="104" y="39" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">trace_id</text>
+      <rect x="112" y="29" width="107.8" height="14" rx="2" fill="#ba7517" opacity="0.92"/>
+      <text x="270" y="39" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">97</text>
+      <text x="104" y="59" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">span_id</text>
+      <rect x="112" y="49" width="106.7" height="14" rx="2" fill="#ba7517" opacity="0.92"/>
+      <text x="270" y="59" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">96</text>
+      <text x="104" y="79" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">rare token</text>
+      <rect x="112" y="69" width="106.7" height="14" rx="2" fill="#ba7517" opacity="0.92"/>
+      <text x="270" y="79" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">96</text>
+      <text x="104" y="99" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">common token</text>
+      <rect x="112" y="89" width="106.7" height="14" rx="2" fill="#ba7517" opacity="0.92"/>
+      <text x="270" y="99" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">96</text>
+      <text x="104" y="119" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">container + trace_id</text>
+      <rect x="112" y="109" width="34.4" height="14" rx="2" fill="#ba7517" opacity="0.92"/>
+      <text x="270" y="119" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">31</text>
+      <text x="104" y="139" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">container + rare</text>
+      <rect x="112" y="129" width="107.8" height="14" rx="2" fill="#ba7517" opacity="0.92"/>
+      <text x="270" y="139" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">97</text>
+      <text x="104" y="159" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">two tokens</text>
+      <rect x="112" y="149" width="146.7" height="14" rx="2" fill="#ba7517" opacity="0.92"/>
+      <text x="270" y="159" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">132</text>
+      <text x="104" y="179" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">pod_name</text>
+      <rect x="112" y="169" width="111.1" height="14" rx="2" fill="#ba7517" opacity="0.92"/>
+      <text x="270" y="179" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">100</text>
+      <text x="340" y="12" font-family="sans-serif" font-size="12" font-weight="700" fill="#1a1a17">Round 2 · 10 GB files (ms)</text>
+      <line x1="340" y1="20" x2="662" y2="20" stroke="#e0d9c8" stroke-width="1"/>
+      <text x="444" y="39" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">trace_id</text>
+      <rect x="452" y="29" width="28.9" height="14" rx="2" fill="#185fa5" opacity="0.92"/>
+      <text x="610" y="39" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">26</text>
+      <text x="444" y="59" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">span_id</text>
+      <rect x="452" y="49" width="27.8" height="14" rx="2" fill="#185fa5" opacity="0.92"/>
+      <text x="610" y="59" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">25</text>
+      <text x="444" y="79" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">rare token</text>
+      <rect x="452" y="69" width="26.7" height="14" rx="2" fill="#185fa5" opacity="0.92"/>
+      <text x="610" y="79" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">24</text>
+      <text x="444" y="99" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">common token</text>
+      <rect x="452" y="89" width="27.8" height="14" rx="2" fill="#185fa5" opacity="0.92"/>
+      <text x="610" y="99" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">25</text>
+      <text x="444" y="119" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">container + trace_id</text>
+      <rect x="452" y="109" width="21.1" height="14" rx="2" fill="#185fa5" opacity="0.92"/>
+      <text x="610" y="119" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">19</text>
+      <text x="444" y="139" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">container + rare</text>
+      <rect x="452" y="129" width="31.1" height="14" rx="2" fill="#185fa5" opacity="0.92"/>
+      <text x="610" y="139" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">28</text>
+      <text x="444" y="159" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">two tokens</text>
+      <rect x="452" y="149" width="45.6" height="14" rx="2" fill="#185fa5" opacity="0.92"/>
+      <text x="610" y="159" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">41</text>
+      <text x="444" y="179" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">pod_name</text>
+      <rect x="452" y="169" width="30.0" height="14" rx="2" fill="#185fa5" opacity="0.92"/>
+      <text x="610" y="179" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">27</text>
+      <text x="0" y="198" font-family="sans-serif" font-size="10.5" fill="#8a8a82">O2 · Parquet, indexed count() queries, warm. Both panels share one scale.</text>
+    </svg>
+    <figcaption>Figure 3 · The same eight indexed <code>count()</code> queries, before and after. Both panels share one scale.</figcaption>
+  </figure>
+
+  <p>The six queries pinned at 96–100 ms land at <strong>24–28 ms</strong> — a ~3.8× drop, close to the ~5× reduction in file count. That is the signature of a per-file fixed cost: opening files, reading their metadata, loading their index segments, merging their results. It scales with how many files a query touches, not with how much data it reads, which is exactly why it was identical across six queries doing entirely different work. Fewer, larger files pay it fewer times.</p>
+
+  <p>It also explains the shape of the rest of the suite. Queries already dominated by real work barely move: <strong>top-N namespaces</strong> — a full scan and group-by over a billion rows, where per-file overhead is a rounding error — improves only 1.07× on Parquet and 1.14× on Vortex.</p>
+
+  <table>
+    <thead>
+      <tr><th>Query</th><th>Parquet 2 GB</th><th>Parquet 10 GB</th><th>Δ</th><th>Vortex 2 GB</th><th>Vortex 10 GB</th><th>Δ</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Single <code>trace_id</code> lookup</td><td>97</td><td>26</td><td><strong>3.73×</strong></td><td>99</td><td>27</td><td><strong>3.67×</strong></td></tr>
+      <tr><td>Single <code>span_id</code> lookup</td><td>96</td><td>25</td><td><strong>3.84×</strong></td><td>94</td><td>26</td><td><strong>3.62×</strong></td></tr>
+      <tr><td>Rare token in <code>message</code></td><td>96</td><td>24</td><td><strong>4.00×</strong></td><td>95</td><td>24</td><td><strong>3.96×</strong></td></tr>
+      <tr><td>Common token in <code>message</code></td><td>96</td><td>25</td><td><strong>3.84×</strong></td><td>95</td><td>27</td><td><strong>3.52×</strong></td></tr>
+      <tr><td>Container + <code>trace_id</code></td><td>31</td><td>19</td><td><strong>1.63×</strong></td><td>36</td><td>24</td><td><strong>1.50×</strong></td></tr>
+      <tr><td>Container + rare token</td><td>97</td><td>28</td><td><strong>3.46×</strong></td><td>104</td><td>32</td><td><strong>3.25×</strong></td></tr>
+      <tr><td>Two tokens (common AND rare)</td><td>132</td><td>41</td><td><strong>3.22×</strong></td><td>133</td><td>45</td><td><strong>2.96×</strong></td></tr>
+      <tr><td>High-cardinality <code>pod_name</code></td><td>100</td><td>27</td><td><strong>3.70×</strong></td><td>103</td><td>27</td><td><strong>3.81×</strong></td></tr>
+      <tr><td>Histogram, 1h buckets</td><td>169</td><td>63</td><td><strong>2.68×</strong></td><td>172</td><td>63</td><td><strong>2.73×</strong></td></tr>
+      <tr><td>Top-N namespaces</td><td>1,607</td><td>1,500</td><td>1.07×</td><td>1,371</td><td>1,204</td><td>1.14×</td></tr>
+      <tr><td>Filtered histogram (token)</td><td>977</td><td>595</td><td><strong>1.64×</strong></td><td>974</td><td>598</td><td><strong>1.63×</strong></td></tr>
+      <tr><td><code>trace_id</code> → 100 rows</td><td>102</td><td>77</td><td><strong>1.32×</strong></td><td>63</td><td>44</td><td><strong>1.43×</strong></td></tr>
+      <tr><td><code>span_id</code> → 100 rows</td><td>141</td><td>73</td><td><strong>1.93×</strong></td><td>135</td><td>53</td><td><strong>2.55×</strong></td></tr>
+      <tr><td>Rare token → 100 rows</td><td>142</td><td>66</td><td><strong>2.15×</strong></td><td>135</td><td>52</td><td><strong>2.60×</strong></td></tr>
+      <tr><td>Common token → 100 rows</td><td>68</td><td>52</td><td><strong>1.31×</strong></td><td>50</td><td>47</td><td>1.06×</td></tr>
+      <tr><td>Container + <code>trace_id</code> → 100 rows</td><td>77</td><td>56</td><td><strong>1.38×</strong></td><td>51</td><td>32</td><td><strong>1.59×</strong></td></tr>
+      <tr><td>Container + rare token → 100 rows</td><td>128</td><td>55</td><td><strong>2.33×</strong></td><td>109</td><td>38</td><td><strong>2.87×</strong></td></tr>
+      <tr><td>Two tokens → 100 rows</td><td>186</td><td>81</td><td><strong>2.30×</strong></td><td>173</td><td>67</td><td><strong>2.58×</strong></td></tr>
+      <tr><td><code>pod_name</code> → 100 rows</td><td>321</td><td class="err">654</td><td class="err">0.49×</td><td>114</td><td>103</td><td>1.11×</td></tr>
+    </tbody>
+  </table>
+
+  <table>
+    <thead>
+      <tr><th></th><th>Parquet</th><th>Vortex</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Total, 19 queries</td><td>4,663 → 3,487 ms</td><td>4,106 → 2,533 ms</td></tr>
+      <tr><td>Geometric mean per query</td><td>141.6 → 66.3 ms</td><td>124.3 → 54.3 ms</td></tr>
+      <tr><td>Geometric-mean speedup</td><td><strong>2.14×</strong></td><td><strong>2.29×</strong></td></tr>
+      <tr><td>Queries improved</td><td>18 of 19</td><td>19 of 19</td></tr>
+    </tbody>
+  </table>
+
+  <h3>The one that got slower</h3>
+
+  <figure>
+    <svg width="100%" viewBox="0 0 680 178" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="The one query that got slower">
+      <text x="0" y="12" font-family="sans-serif" font-size="12" font-weight="700" fill="#1a1a17">SELECT * WHERE kubernetes_pod_name = … ORDER BY _timestamp DESC LIMIT 100 (ms, warm)</text>
+      <line x1="0" y1="20" x2="580" y2="20" stroke="#e0d9c8" stroke-width="1"/>
+      <text x="112" y="43" text-anchor="end" font-family="sans-serif" font-size="11" fill="#4a4a45">Parquet · 2 GB</text>
+      <rect x="120" y="29" width="164.6" height="18" rx="2" fill="#ba7517" opacity="0.92"/>
+      <text x="528" y="43" font-family="sans-serif" font-size="11" font-weight="700" fill="#1a1a17">321</text>
+      <text x="112" y="69" text-anchor="end" font-family="sans-serif" font-size="11" fill="#4a4a45">Parquet · 10 GB</text>
+      <rect x="120" y="55" width="335.4" height="18" rx="2" fill="#185fa5" opacity="0.92"/>
+      <text x="528" y="69" font-family="sans-serif" font-size="11" font-weight="700" fill="#1a1a17">654</text>
+      <text x="112" y="95" text-anchor="end" font-family="sans-serif" font-size="11" fill="#4a4a45">Vortex · 2 GB</text>
+      <rect x="120" y="81" width="58.5" height="18" rx="2" fill="#ba7517" opacity="0.92"/>
+      <text x="528" y="95" font-family="sans-serif" font-size="11" font-weight="700" fill="#1a1a17">114</text>
+      <text x="112" y="121" text-anchor="end" font-family="sans-serif" font-size="11" fill="#4a4a45">Vortex · 10 GB</text>
+      <rect x="120" y="107" width="52.8" height="18" rx="2" fill="#0f6e56" opacity="0.92"/>
+      <text x="528" y="121" font-family="sans-serif" font-size="11" font-weight="700" fill="#1a1a17">103</text>
+      <text x="112" y="147" text-anchor="end" font-family="sans-serif" font-size="11" fill="#4a4a45">ClickHouse</text>
+      <rect x="120" y="133" width="100.0" height="18" rx="2" fill="#c14920" opacity="0.92"/>
+      <text x="528" y="147" font-family="sans-serif" font-size="11" font-weight="700" fill="#1a1a17">195</text>
+      <text x="560" y="69" font-family="sans-serif" font-size="11" font-weight="700" fill="#c14920">← 2.0× slower</text>
+      <text x="0" y="170" font-family="sans-serif" font-size="10.5" fill="#8a8a82">Amber = 2 GB files, engine colour = 10 GB files. The only regression in 38 measurements.</text>
+    </svg>
+    <figcaption>Figure 4 · <code>SELECT *</code> by pod name, top 100 by timestamp. Parquet doubled; Vortex did not.</figcaption>
+  </figure>
+
+  <p>Fetching 100 rows by <code>kubernetes_pod_name</code> got <strong>2.0× slower on Parquet</strong> — 321 ms → 654 ms warm, 395 ms → 857 ms cold. It is the only regression in 38 measurements, and it is worth being precise about what the data actually supports:</p>
+
+  <ul>
+    <li>It is <strong>Parquet-specific</strong>. The same query, on the same data, with the same 10 GB cap, got <em>faster</em> on Vortex — 114 ms → 103 ms. So the cause sits in the read path, not in compaction itself</li>
+    <li>It is <strong>row-fetch-specific</strong>. The <code>pod_name</code> <code>count()</code> query uses the same secondary index over the same rows and improved 3.70×. Only materializing the rows regressed</li>
+    <li>It shows up <strong>cold and warm alike</strong>, at a similar ratio, so it is not a cache artifact</li>
+  </ul>
+
+  <p>The likely mechanism — and this is a hypothesis, not something this run profiled — is that a top-K row fetch has to materialize candidate rows out of whichever files the index points at, and a 10 GB Parquet file makes that unit of work five times larger: a footer five times bigger to deserialize, five times the row groups to seek through, larger column chunks to decompress — all to return 100 rows. Vortex's layout is lazily addressable, so the same lookup does not pay in proportion to file size.</p>
+
+  <p>The practical reading: <strong>if your workload is dominated by <code>SELECT * … LIMIT n</code> on a secondary-indexed high-cardinality column and you run Parquet, measure before raising this knob.</strong> On Vortex it is a straight win.</p>
+
+  <hr class="divider">
+
+  <h2>Round 2 · head to head</h2>
+
+  <p>Warm medians, in milliseconds, all three systems at their round-2 settings. Bold is the fastest in the row.</p>
+
+  <h3>1 · Indexed <code>count()</code></h3>
+
+  <table>
+    <thead>
+      <tr><th>Query</th><th>ClickHouse</th><th>O2 · Parquet</th><th>O2 · Vortex</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Single <code>trace_id</code> lookup</td><td>87</td><td><strong>26</strong></td><td>27</td></tr>
+      <tr><td>Single <code>span_id</code> lookup</td><td>80</td><td><strong>25</strong></td><td>26</td></tr>
+      <tr><td>Rare token in <code>message</code></td><td><strong>24</strong></td><td>24</td><td>24</td></tr>
+      <tr><td>Common token in <code>message</code></td><td>1,891</td><td><strong>25</strong></td><td>27</td></tr>
+      <tr><td>Container + <code>trace_id</code></td><td>93</td><td><strong>19</strong></td><td>24</td></tr>
+      <tr><td>Container + rare token</td><td>29</td><td><strong>28</strong></td><td>32</td></tr>
+      <tr><td>Two tokens (common AND rare)</td><td><strong>25</strong></td><td>41</td><td>45</td></tr>
+      <tr><td>High-cardinality <code>pod_name</code></td><td>2,949</td><td><strong>27</strong></td><td><strong>27</strong></td></tr>
+    </tbody>
+  </table>
+
+  <h3>2 · Full-scan aggregation</h3>
+
+  <table>
+    <thead>
+      <tr><th>Query</th><th>ClickHouse</th><th>O2 · Parquet</th><th>O2 · Vortex</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Histogram, 1h buckets</td><td>1,591</td><td><strong>63</strong></td><td><strong>63</strong></td></tr>
+      <tr><td>Top-N namespaces</td><td>1,639</td><td>1,500</td><td><strong>1,204</strong></td></tr>
+      <tr><td>Filtered histogram (token)</td><td>2,248</td><td><strong>595</strong></td><td>598</td></tr>
+    </tbody>
+  </table>
+
+  <h3>3 · <code>SELECT * … ORDER BY _timestamp DESC LIMIT 100</code></h3>
+
+  <table>
+    <thead>
+      <tr><th>Query</th><th>ClickHouse</th><th>O2 · Parquet</th><th>O2 · Vortex</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>trace_id</code> → 100 rows</td><td>190</td><td>77</td><td><strong>44</strong></td></tr>
+      <tr><td><code>span_id</code> → 100 rows</td><td>158</td><td>73</td><td><strong>53</strong></td></tr>
+      <tr><td>Rare token → 100 rows</td><td>86</td><td>66</td><td><strong>52</strong></td></tr>
+      <tr><td>Common token → 100 rows</td><td><strong>26</strong></td><td>52</td><td>47</td></tr>
+      <tr><td>Container + <code>trace_id</code> → 100 rows</td><td>187</td><td>56</td><td><strong>32</strong></td></tr>
+      <tr><td>Container + rare token → 100 rows</td><td>104</td><td>55</td><td><strong>38</strong></td></tr>
+      <tr><td>Two tokens → 100 rows</td><td>92</td><td>81</td><td><strong>67</strong></td></tr>
+      <tr><td><code>pod_name</code> → 100 rows</td><td>195</td><td class="err">654</td><td><strong>103</strong></td></tr>
+    </tbody>
+  </table>
+
+  <table>
+    <thead>
+      <tr><th></th><th>ClickHouse</th><th>O2 · Parquet</th><th>O2 · Vortex</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Total, 19 queries (warm)</td><td>11,694 ms</td><td>3,487 ms</td><td><strong>2,533 ms</strong></td></tr>
+      <tr><td>vs ClickHouse</td><td>—</td><td>3.35×</td><td><strong>4.62×</strong></td></tr>
+      <tr><td>Geometric mean per query</td><td>181.9 ms</td><td>66.3 ms</td><td><strong>54.3 ms</strong></td></tr>
+      <tr><td>Per-query geometric-mean speedup</td><td>—</td><td>2.74×</td><td><strong>3.35×</strong></td></tr>
+      <tr><td>Queries faster than ClickHouse</td><td>—</td><td>15 of 19</td><td>15 of 19</td></tr>
+    </tbody>
+  </table>
+
+  <p>ClickHouse is the fastest of the three on <strong>3 of the 19</strong>, one of which is a tie at the millisecond resolution floor. The compaction change moves OpenObserve from <em>winning on aggregate while losing most individual queries</em> to <strong>beating ClickHouse on 15 of 19</strong>: its geometric-mean advantage goes from 1.26× to 2.74× on Parquet, and from 1.44× to 3.35× on Vortex.</p>
+
+  <h3>Where the gap is widest</h3>
+
+  <figure>
+    <svg width="100%" viewBox="0 0 680 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="The four queries where ClickHouse is slowest">
+      <text x="0" y="12" font-family="sans-serif" font-size="12" font-weight="700" fill="#1a1a17">pod_name count() — 109× (ms)</text>
+      <line x1="0" y1="20" x2="322" y2="20" stroke="#e0d9c8" stroke-width="1"/>
+      <text x="84" y="39" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">ClickHouse</text>
+      <rect x="92" y="29" width="170.0" height="14" rx="2" fill="#c14920" opacity="0.92"/>
+      <text x="270" y="39" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">2,949</text>
+      <text x="84" y="59" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">O2 · Parquet</text>
+      <rect x="92" y="49" width="2.0" height="14" rx="2" fill="#185fa5" opacity="0.92"/>
+      <text x="270" y="59" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">27</text>
+      <text x="84" y="79" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">O2 · Vortex</text>
+      <rect x="92" y="69" width="2.0" height="14" rx="2" fill="#0f6e56" opacity="0.92"/>
+      <text x="270" y="79" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">27</text>
+      <text x="340" y="12" font-family="sans-serif" font-size="12" font-weight="700" fill="#1a1a17">common-token count() — 70× (ms)</text>
+      <line x1="340" y1="20" x2="662" y2="20" stroke="#e0d9c8" stroke-width="1"/>
+      <text x="424" y="39" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">ClickHouse</text>
+      <rect x="432" y="29" width="170.0" height="14" rx="2" fill="#c14920" opacity="0.92"/>
+      <text x="610" y="39" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">1,891</text>
+      <text x="424" y="59" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">O2 · Parquet</text>
+      <rect x="432" y="49" width="2.2" height="14" rx="2" fill="#185fa5" opacity="0.92"/>
+      <text x="610" y="59" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">25</text>
+      <text x="424" y="79" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">O2 · Vortex</text>
+      <rect x="432" y="69" width="2.4" height="14" rx="2" fill="#0f6e56" opacity="0.92"/>
+      <text x="610" y="79" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">27</text>
+      <text x="0" y="112" font-family="sans-serif" font-size="12" font-weight="700" fill="#1a1a17">hourly histogram — 25× (ms)</text>
+      <line x1="0" y1="120" x2="322" y2="120" stroke="#e0d9c8" stroke-width="1"/>
+      <text x="84" y="139" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">ClickHouse</text>
+      <rect x="92" y="129" width="170.0" height="14" rx="2" fill="#c14920" opacity="0.92"/>
+      <text x="270" y="139" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">1,591</text>
+      <text x="84" y="159" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">O2 · Parquet</text>
+      <rect x="92" y="149" width="6.7" height="14" rx="2" fill="#185fa5" opacity="0.92"/>
+      <text x="270" y="159" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">63</text>
+      <text x="84" y="179" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">O2 · Vortex</text>
+      <rect x="92" y="169" width="6.7" height="14" rx="2" fill="#0f6e56" opacity="0.92"/>
+      <text x="270" y="179" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">63</text>
+      <text x="340" y="112" font-family="sans-serif" font-size="12" font-weight="700" fill="#1a1a17">filtered histogram — 3.8× (ms)</text>
+      <line x1="340" y1="120" x2="662" y2="120" stroke="#e0d9c8" stroke-width="1"/>
+      <text x="424" y="139" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">ClickHouse</text>
+      <rect x="432" y="129" width="170.0" height="14" rx="2" fill="#c14920" opacity="0.92"/>
+      <text x="610" y="139" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">2,248</text>
+      <text x="424" y="159" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">O2 · Parquet</text>
+      <rect x="432" y="149" width="45.0" height="14" rx="2" fill="#185fa5" opacity="0.92"/>
+      <text x="610" y="159" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">595</text>
+      <text x="424" y="179" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">O2 · Vortex</text>
+      <rect x="432" y="169" width="45.2" height="14" rx="2" fill="#0f6e56" opacity="0.92"/>
+      <text x="610" y="179" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">598</text>
+      <text x="0" y="212" font-family="sans-serif" font-size="10.5" fill="#8a8a82">Warm medians, round 2. Each panel is scaled to its own maximum.</text>
+    </svg>
+    <figcaption>Figure 5 · The four queries where ClickHouse is slowest. Each panel scaled to its own maximum.</figcaption>
+  </figure>
+
+  <p><code>kubernetes_pod_name</code> carries a <code>bloom_filter(0.01)</code> skip index on the ClickHouse side, and the count still takes <strong>2.9 seconds</strong>. A bloom filter can only reject granules, and for a pod that appears throughout a billion rows, very few granules can be rejected — so it degenerates into a scan. OpenObserve's Tantivy secondary index returns the matching row set directly, in 27 ms. The same asymmetry drives the common-token count: ClickHouse's <code>text()</code> index finds the term everywhere and then has to count it, OpenObserve reads the count out of the index.</p>
+
+  <h3>The four rows OpenObserve does not take outright</h3>
+
+  <table>
+    <thead>
+      <tr><th>Query</th><th>ClickHouse</th><th>Parquet</th><th>Vortex</th><th>Why</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Rare token in <code>message</code></td><td>24</td><td>24</td><td>24</td><td>a tie at the measurement floor</td></tr>
+      <tr><td>Two tokens (common AND rare)</td><td><strong>25</strong></td><td>41</td><td>45</td><td>ClickHouse intersects two <code>hasAnyTokens</code> posting lists cheaply</td></tr>
+      <tr><td>Common token → 100 rows</td><td><strong>26</strong></td><td>52</td><td>47</td><td>top-K on the sort key, on a term that matches everywhere — it reads the newest granules and stops</td></tr>
+      <tr><td><code>pod_name</code> → 100 rows</td><td>195</td><td class="err">654</td><td><strong>103</strong></td><td>Parquet only — the regression above; Vortex wins this row</td></tr>
+    </tbody>
+  </table>
+
+  <p>Only two of those are outright ClickHouse wins over both formats: the rare-token count is a tie, and Vortex takes the <code>pod_name</code> row fetch. There is a pattern in them. <strong>ClickHouse wins where its <code>ORDER BY (_timestamp)</code> sort key lets it answer a top-K query by reading the tail of the table</strong>, and where a selective term leaves the text index doing nearly all the work. It loses by 25×, 70×, 109× wherever a query has to scan or aggregate.</p>
+
+  <h2>Parquet vs Vortex</h2>
+
+  <p>The two OpenObserve instances share a binary, a dataset, an index configuration, and every environment variable except <code>ZO_FILE_FORMAT</code>. The results split cleanly by query shape:</p>
+
+  <table>
+    <thead>
+      <tr><th></th><th>Parquet</th><th>Vortex</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Total, 19 queries (round 2, warm)</td><td>3,487 ms</td><td><strong>2,533 ms</strong></td></tr>
+      <tr><td><code>count()</code> group, 8 queries</td><td><strong>215 ms</strong></td><td>232 ms</td></tr>
+      <tr><td>Aggregation group, 3 queries</td><td>2,158 ms</td><td><strong>1,865 ms</strong></td></tr>
+      <tr><td>Row-fetch group, 8 queries</td><td>1,114 ms</td><td><strong>436 ms</strong></td></tr>
+      <tr><td>Storage</td><td><strong>673.5 GB</strong></td><td>710.7 GB</td></tr>
+    </tbody>
+  </table>
+
+  <p><strong>They tie on indexed <code>count()</code></strong> — both are answering out of the same Tantivy index and the storage format barely participates. The gap is entirely in the two groups that actually read data.</p>
+
+  <p><strong>Row fetch goes to Vortex by 2.6×</strong>, and it wins all eight individually. Materializing 100 wide rows out of a large file is exactly what a lazily addressable layout is for — and it is also why Vortex was immune to the regression that cost Parquet 2× on the <code>pod_name</code> fetch. <strong>Aggregation goes to Vortex by 1.16×</strong>, almost all of it from top-N namespaces. <strong>Storage goes to Parquet by 5.5%.</strong></p>
+
+  <p>For a log-search workload — find the matching lines, show me the lines — Vortex is the better default, and 37 GB out of 674 does not come close to paying for the difference.</p>
+
+  <hr class="divider">
+
+  <h2>The bottom line</h2>
+
+  <ul>
+    <li><strong>Aggregate query time:</strong> OpenObserve answers this 19-query suite <strong>3.4× (Parquet) to 4.6× (Vortex) faster than ClickHouse</strong>, on a third less disk, with a full-text index on both sides</li>
+    <li><strong>The gap is not uniform:</strong> ClickHouse is competitive or better on small, highly selective queries that ride its <code>_timestamp</code> sort key, and 25–109× slower on anything that scans or aggregates</li>
+    <li><strong>One configuration knob was worth more than the format choice:</strong> raising <code>ZO_COMPACT_MAX_FILE_SIZE</code> from 2 GB to 10 GB was a 2.1–2.3× geometric-mean improvement, and it is what turns a 9-of-19 result into a 15-of-19 result</li>
+    <li><strong>It has one sharp edge:</strong> Parquet row fetch on a secondary-indexed high-cardinality column got 2× slower. Vortex did not</li>
+  </ul>
+
+  <h3>Check it yourself</h3>
+
+  <p><strong>Nothing here is a screenshot of a number we ask you to trust.</strong> The entire benchmark — data generator, ClickHouse schema and index definitions, the matched query templates for both engines, the isolated runner, the report builder, and the raw per-run samples behind every figure in this document — is in one public repository:</p>
+
+  <p style="text-align:center;font-size:1.05rem"><a href="https://github.com/openobserve/openobserve-clickhouse-benchmark"><strong>github.com/openobserve/openobserve-clickhouse-benchmark</strong></a></p>
+
+  <p>That includes the parts that make a benchmark arguable rather than merely quotable: which columns are indexed on each side and why (<code>.env.example</code>, <code>schemas/clickhouse.sql</code>), the exact SQL each engine was asked to run (<code>queries/queries.json</code>), and all five raw samples for every query, engine and round (<code>data.generated.js</code>, <code>data.v2.js</code>) — so any table here can be recomputed, and any choice we made can be changed and re-run. If you reproduce it and get a different answer, that is a useful result: open an issue with your numbers.</p>
+
+  <div class="pull">
+    A benchmark that reports only totals would have called round 1 a 2.5× win and stopped. The interesting number there was the one that <strong>refused to vary — six different queries, all 96 ms</strong> — and it was measuring file count, not the database.
+  </div>
+
+  <div class="footnote">
+    <strong>Test notes:</strong>
+    <ul>
+      <li>ClickHouse <code>26.7.3.19-stable</code>, <code>MergeTree ORDER BY (_timestamp)</code>, <code>index_granularity = 8192</code>; OpenObserve <code>v0.92.2</code>, two instances differing only in <code>ZO_FILE_FORMAT</code></li>
+      <li>One dedicated <code>i8g.2xlarge</code> per backend, data on local NVMe, all nodes running concurrently; queries measured against one backend at a time</li>
+      <li>A fourth node, not under test — a <code>c7g.2xlarge</code> — runs the generator and the benchmark client</li>
+      <li>1,000,000,000 records / 2,199 GB of NDJSON, serialized once and posted byte-identically to all three backends in one fan-out pass; a batch counts as sent only when every backend accepted it</li>
+      <li>Query window pinned absolutely at 2026-06-01 → 2027-06-01 UTC on both engines — wider than the data, so no engine gets time-pruning the other lacks</li>
+      <li>5 runs per query; the OS page cache is dropped on each backend node before its pass, so run 1 is cold; warm reported as <code>min(run 2, run 3)</code>. The drop <code>run-benchmark.py</code> issues itself lands on the driver and is a no-op for the engine under test — the manual step on the backend node is what makes run 1 cold</li>
+      <li>Timing is server-reported on both sides: ClickHouse <code>statistics.elapsed</code>, OpenObserve <code>took</code>. OpenObserve's is whole milliseconds, so sub-30 ms differences are at the resolution limit</li>
+      <li>Storage figures are compressed data plus indexes, from <code>system.parts</code> + <code>system.data_skipping_indices</code> and from OpenObserve's stream-stats API respectively</li>
+      <li>The ingestion figure is one fan-out pass into all three backends and is not a per-engine ingest benchmark</li>
+      <li><code>ZO_COMPACT_MAX_FILE_SIZE</code> is a compaction-time setting — it changes the files compaction produces and does nothing to files that already exist, so it takes either a fresh ingest or a forced recompaction pass over the existing data; restarting with the new value alone measures nothing</li>
+      <li>Multipliers are rounded — the point is the order of magnitude, not the decimals</li>
+      <li>Everything — generator, schemas, queries, runner, report builder and raw samples — is public at <a href="https://github.com/openobserve/openobserve-clickhouse-benchmark">github.com/openobserve/openobserve-clickhouse-benchmark</a></li>
+      <li>Interactive versions of both rounds ship with the repo as <code>index.html</code> (2 GB) and <code>index-v2.html</code> (10 GB); the raw per-run samples are in <code>data.generated.js</code> and <code>data.v2.js</code></li>
+    </ul>
+  </div>
+
+</article>
+</body>
+</html>

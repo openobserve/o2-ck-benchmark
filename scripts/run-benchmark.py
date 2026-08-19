@@ -7,9 +7,10 @@ For each query in queries/queries.json, the driver:
      shape (pure index+scan) and its SELECT * LIMIT 100 shape (`*_rows`
      templates; adds row materialization/transfer, may terminate early),
   3. records server-side latency,
-  4. reports p50 / p95 / p99 across all runs per backend (the driver attempts
-     to drop the OS page cache once before run 1 and records whether that
-     privileged operation actually succeeded).
+  4. reports p50 / p95 / p99 across all runs per backend, recording how the
+     cold state of run 1 was actually established (see COLD_* below -- the
+     driver can only drop its own page cache, which is the backend's only when
+     the two share a host).
 
 Needle values (a real trace_id / span_id / request id / pod) are embedded in
 queries/queries.json so every backend and every machine runs the same query
@@ -20,8 +21,10 @@ Stdlib only; no pip installs required.
 
 import argparse
 import base64
+import ipaddress
 import json
 import os
+import socket
 import statistics
 import subprocess
 import sys
@@ -35,6 +38,20 @@ from pathlib import Path
 TS_START = 1_780_272_000_000_000
 TS_END = 1_811_808_000_000_000
 BENCH_TABLE = "k8s_logs"
+
+# How run 1's cold page-cache state was established. The OS page cache that
+# matters belongs to the host running the *backend*; this process can only drop
+# its own. Those are the same host only in the single-machine layout, so on a
+# multi-node run the drop has to happen on the backend node and this runner can
+# only record that it was asserted.
+COLD_DROPPED = "dropped-locally"      # backend is on this host; drop succeeded
+COLD_ATTESTED = "dropped-on-backend"  # operator dropped it there (--cache-dropped-on-backend)
+COLD_REMOTE = "remote-backend"        # backend elsewhere, nothing dropped -> run 1 is warm
+COLD_NO_SUDO = "sudo-unavailable"
+COLD_UNSUPPORTED = "unsupported-platform"
+# Only these two mean run 1 is genuinely cold.
+COLD_OK = (COLD_DROPPED, COLD_ATTESTED)
+
 BACKEND_ORDER = ("clickhouse", "o2-parquet", "o2-vortex")
 BACKEND_LABELS = {
     "clickhouse": "ClickHouse",
@@ -392,12 +409,57 @@ def machine_info():
     }
 
 
-def drop_os_page_cache():
-    """Drop the local OS page cache so the next run is a genuine cold read
-    (driver and server share the host). Called once per query variant, so only
-    the first of the following runs is cold; the rest read from a warm page
-    cache. Needs sudo. macOS: `sudo purge`.
-    Linux: `sync` then write 3 to /proc/sys/vm/drop_caches."""
+def _own_addresses():
+    """Every IP this host answers on, as best as the stdlib can tell."""
+    addrs = set()
+    for name in {socket.gethostname(), socket.getfqdn()}:
+        try:
+            addrs |= {ai[4][0] for ai in socket.getaddrinfo(name, None)}
+        except (socket.gaierror, UnicodeError):
+            pass
+    return addrs
+
+
+def endpoint_is_local(url):
+    """True when `url` resolves to this host — loopback or one of its own IPs.
+
+    This is the switch that decides whether dropping *our* page cache does
+    anything for the backend under test.
+    """
+    host = urllib.parse.urlparse(url).hostname
+    if not host:
+        return False
+    try:
+        addrs = {ai[4][0] for ai in socket.getaddrinfo(host, None)}
+    except (socket.gaierror, UnicodeError):
+        return False
+    for a in addrs:
+        try:
+            if ipaddress.ip_address(a.split("%", 1)[0]).is_loopback:
+                return True
+        except ValueError:
+            continue
+    return bool(addrs & _own_addresses())
+
+
+def drop_os_page_cache(backend_is_local, attested):
+    """Establish (or record) the cold page-cache state for the next run.
+
+    Returns one of the COLD_* constants rather than a bool, because "we ran the
+    drop command and it exited 0" and "the backend under test now has a cold
+    page cache" are the same statement only when the backend runs on this host.
+    On a multi-node layout they are not, and a bool cannot tell the difference —
+    which is exactly how a warm run 1 gets published as a cold one.
+
+    Called once per query variant, so only the first of the following runs is
+    cold; the rest read from a warm page cache. Needs sudo. macOS: `sudo purge`.
+    Linux: `sync` then write 3 to /proc/sys/vm/drop_caches.
+    """
+    if attested:
+        return COLD_ATTESTED
+    if not backend_is_local:
+        return COLD_REMOTE
+
     import platform
 
     system = platform.system()
@@ -415,23 +477,23 @@ def drop_os_page_cache():
     else:
         print(f"   (no page-cache drop implemented for {system}; "
               "results may be warm)")
-        return False
+        return COLD_UNSUPPORTED
 
     if result.returncode != 0:
         print("   (OS page-cache drop skipped: passwordless sudo is unavailable; "
               "first sample may be warm)")
-        return False
-    return True
+        return COLD_NO_SUDO
+    return COLD_DROPPED
 
 
-def run_query(backend, sql, runs, size=0):
+def run_query(backend, sql, runs, size=0, *, backend_is_local=False, attested=False):
+    cold_state = drop_os_page_cache(backend_is_local, attested)
     samples = []
-    os_cache_dropped = drop_os_page_cache()
     for _ in range(runs):
         backend.drop_cache()
         ms, _rows = backend.timed(sql, size)
         samples.append(ms)
-    return samples, os_cache_dropped
+    return samples, cold_state
 
 
 def main():
@@ -443,6 +505,11 @@ def main():
     ap.add_argument("--queries", default="queries/queries.json")
     ap.add_argument("--runs", type=int, default=5,
                     help="runs per query (1 cold + N-1 hot; page cache dropped once before run 1)")
+    ap.add_argument("--cache-dropped-on-backend", action="store_true",
+                    help="assert that you dropped the OS page cache ON THE BACKEND NODE "
+                         "immediately before this run (sync; echo 3 > /proc/sys/vm/drop_caches). "
+                         "Required to call run 1 cold when the backend is not on this host — "
+                         "this process can only drop its own page cache.")
     ap.add_argument("--out", default="results/summary.md")
     # OpenObserve
     ap.add_argument("--o2-parquet-url", default="http://localhost:5080")
@@ -479,6 +546,20 @@ def main():
         sys.exit("no backends enabled")
     for b in backends:
         b.run_entries = []
+        b.is_local = endpoint_is_local(b.url)
+        if b.is_local or args.cache_dropped_on_backend:
+            continue
+        # The common multi-node mistake: the runner drops the driver's page
+        # cache, exits 0, and the report labels a warm sample "cold".
+        print(f"!! {b.name} at {b.url} is not on this host, and "
+              "--cache-dropped-on-backend was not passed.")
+        print("   This process can only drop its OWN page cache, so run 1 will "
+              "NOT be a cold read.")
+        print("   Drop it on the backend node immediately before this run:")
+        print("       sync; sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'")
+        print("   then re-run with --cache-dropped-on-backend. Continuing; "
+              "run 1 is recorded as warm.")
+        print()
 
     spec = json.loads(Path(args.queries).read_text())
     queries = spec["queries"]
@@ -512,7 +593,11 @@ def main():
                          "category": q.get("category", ""),
                          "sql_template": tmpl, "sql": sql}
                 try:
-                    samples, os_cache_dropped = run_query(b, sql, args.runs, size)
+                    samples, cold_state = run_query(
+                        b, sql, args.runs, size,
+                        backend_is_local=b.is_local,
+                        attested=args.cache_dropped_on_backend,
+                    )
                 except (urllib.error.URLError, RuntimeError) as e:
                     print(f"   {b.name:12s} ERROR: {e}")
                     entry["error"] = str(e)
@@ -525,7 +610,10 @@ def main():
                         "min": min(samples),
                         "max": max(samples),
                         "samples": samples,
-                        "os_page_cache_dropped_before_first_run": os_cache_dropped,
+                        "cold_state": cold_state,
+                        # kept for compatibility with build-report.py / index.html;
+                        # true only when run 1 is genuinely cold
+                        "os_page_cache_dropped_before_first_run": cold_state in COLD_OK,
                     })
                     print(f"   {b.name:12s} median={fmt_ms(entry['median'])}  "
                           f"p95={fmt_ms(entry['p95'])}  p99={fmt_ms(entry['p99'])}")
@@ -543,11 +631,14 @@ def main():
             print(f"   {b.name:12s} storage collection failed: {e}")
             storage = None
         completed = [q for q in b.run_entries if "error" not in q]
-        cache_drop_ok = bool(completed) and all(
-            q.get("os_page_cache_dropped_before_first_run", False) for q in completed
-        )
+        states = {q.get("cold_state") for q in completed}
+        cache_drop_ok = bool(states) and states.issubset(COLD_OK)
         payload = {"backend": b.name, "runs": args.runs, "table": BENCH_TABLE,
                    "isolated_run": True,
+                   "backend_url": b.url,
+                   "backend_is_local": b.is_local,
+                   "cold_state": (states.pop() if len(states) == 1
+                                  else ("mixed" if states else None)),
                    "os_page_cache_dropped_at_query_start": cache_drop_ok,
                    "storage": storage, "queries": b.run_entries}
         (results_dir / f"{b.name}.json").write_text(json.dumps(payload, indent=2))
@@ -627,12 +718,30 @@ def build_combined_report(results_dir, out_path, ingest_stats_path=None):
     L.append(f"- table / stream: `{meta['table']}`")
     L.append("- OS page-cache dropped at each query start: "
              + ("**yes**" if cache_drop_ok else "**no / not verified**"))
+    how = {n: data[n].get("cold_state") for n in names if data[n].get("cold_state")}
+    if how:
+        L.append("- how run 1 was made cold: "
+                 + ", ".join(f"{n}=`{v}`" for n, v in how.items()))
+        if any(v == "remote-backend" for v in how.values()):
+            L.append("  - **`remote-backend` means run 1 was NOT cold**: the backend is not on "
+                     "the host that ran this driver, so only the driver's page cache was "
+                     "dropped. Drop it on the backend node and pass "
+                     "`--cache-dropped-on-backend`.")
+    layout = {n: data[n].get("backend_is_local") for n in names
+              if data[n].get("backend_is_local") is not None}
+    if layout:
+        L.append("- layout: "
+                 + ("**single-machine** (driver shares the host with the backend)"
+                    if all(layout.values())
+                    else "**multi-node** (backend on a separate host from the driver)"))
     if machine:
         cores = machine.get("cores")
         mem = machine.get("memory_gib")
-        L.append(f"- machine: **{machine.get('cpu','?')}**, "
+        L.append(f"- driver machine: **{machine.get('cpu','?')}**, "
                  f"{cores if cores else '?'} cores, "
-                 f"{mem if mem else '?'} GiB RAM ({machine.get('platform','')})")
+                 f"{mem if mem else '?'} GiB RAM ({machine.get('platform','')})"
+                 + ("" if layout and all(layout.values())
+                    else " — this is the driver, not the backend under test"))
     if ingest:
         tgts = ", ".join(ingest.get("targets", [])) or "?"
         L.append(f"- ingest: **{int(ingest.get('records_sent',0)):,} records** "
