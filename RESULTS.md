@@ -24,7 +24,7 @@ in both rounds and serves as the control.
 | Ingestion | one fan-out pass, 16,666 s (4h37m) wall clock, 60,002 rec/s, 128.1 MB/s, then **stopped** |
 | Query window | 2026-06-01 → 2027-06-01 UTC, pinned absolutely, wider than the data |
 | Queries | 19: 8 indexed `count()`, 3 full-scan aggregations, 8 `SELECT * … LIMIT 100` |
-| Runs | 5 per query; OS page cache dropped on each backend node before its pass — run 1 cold, runs 2–5 warm |
+| Runs | 5 per query; OS page cache dropped on each backend node before its pass — run 1 cold, runs 2–5 hot |
 | Caches | ClickHouse filesystem cache off; OpenObserve result cache off (`use_cache=false`) |
 | Isolation | separate nodes, so no backend shares hardware with another; measured one at a time |
 | Timing | server-reported on both sides — ClickHouse `statistics.elapsed`, OpenObserve `took` |
