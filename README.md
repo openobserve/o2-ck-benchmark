@@ -202,7 +202,11 @@ python3 scripts/run-benchmark.py \
 ```
 
 The cache drop needs elevated OS permission: macOS uses `sudo purge`; Linux
-uses `sync` followed by `/proc/sys/vm/drop_caches`.
+
+```bash
+sync
+sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
+```
 
 Each isolated run writes its own durable result and rebuilds the merged summary:
 
