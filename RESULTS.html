@@ -471,6 +471,8 @@
 
   <p><code>kubernetes_container_name</code> is left unindexed on purpose: it has 8 distinct values, so an index prunes nothing, and indexing it on one side only would be a gift. Parquet's embedded row-group bloom filter is disabled (<code>ZO_BLOOM_FILTER_PARQUET_ENABLED=false</code>) so it cannot become a Parquet-only advantage over Vortex. ClickHouse is ordered by <code>_timestamp</code> alone, so no structured column gets a sort-key advantage either.</p>
 
+  <p><strong>One table each, and no query-specific materialization on either side.</strong> Every engine here gets one table, one physical copy of the data, one sort order — <code>_timestamp</code> — and general-purpose indexes only; nothing is precomputed for a particular query. ClickHouse can certainly make the <code>kubernetes_pod_name</code> query fast with a projection or a materialized view. That is a second copy of the data tuned to one query, and OpenObserve can just as easily pre-aggregate the same column with a summary pipeline. Allow it on either side and you are no longer comparing two log stores, you are comparing two materialization strategies. So neither side gets one.</p>
+
   <p><strong>Nothing under test also drives the test.</strong> The generator and the benchmark client run on a fourth node, a <code>c7g.2xlarge</code>. A driver co-resident with a backend would burn CPU on JSON serialization and result parsing on the very box it is timing — and would do so unequally across three engines that return different payload sizes. Keeping it off the measured nodes costs one instance and removes the whole class of problem. Because timing is server-reported on both sides, the network hop between driver and backend is not charged to either engine; the two choices only work together.</p>
 
   <h3>What this benchmark does not measure</h3>
@@ -481,7 +483,7 @@
 
   <p><strong>Concurrency.</strong> Every query is issued serially against an otherwise idle machine.</p>
 
-  <p><strong>Per-query row counts.</strong> The harness reads <code>rows_read</code> (ClickHouse) and <code>scan_records</code> (OpenObserve) on every request but does not persist them, so the recorded results carry latency without the work behind it. The row check that <em>is</em> recorded sits at storage level — <code>system.parts</code> against <code>file_list</code> — and confirms all three backends hold the same 1,000,000,000 rows. Persisting the per-query counts is the first thing to add before the next run.</p>
+  <p><strong>Per-query row counts.</strong> The harness reads <code>rows_read</code> (ClickHouse) and <code>scan_records</code> (OpenObserve) on every request but does not persist them, so the recorded results carry latency without the work behind it. The row check that <em>is</em> recorded sits at storage level — <code>system.parts</code> against <code>file_list</code> — and confirms all three backends hold the same 1,000,000,000 rows.</p>
 
   <p>One more thing worth stating: <strong>OpenObserve reports <code>took</code> in whole milliseconds.</strong> Below about 30 ms that quantization is a real part of the spread, and a two- or three-millisecond gap in the tables below should be read as a tie, not a win.</p>
 

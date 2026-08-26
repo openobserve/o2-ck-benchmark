@@ -88,6 +88,15 @@ would be a gift. Parquet's embedded row-group bloom filter is disabled
 advantage over Vortex. ClickHouse is ordered by `_timestamp` alone, so no
 structured column gets a sort-key advantage either.
 
+**One table each, and no query-specific materialization on either side.** Every
+engine here gets one table, one physical copy of the data, one sort order —
+`_timestamp` — and general-purpose indexes only; nothing is precomputed for a
+particular query. ClickHouse can certainly make the `kubernetes_pod_name` query fast with a
+projection or a materialized view. That is a second copy of the data tuned to one
+query, and OpenObserve can just as easily pre-aggregate the same column with a
+summary pipeline. Allow it on either side and you are no longer comparing two log
+stores, you are comparing two materialization strategies. So neither side gets one.
+
 ### What this benchmark does not measure
 
 - **Ingestion throughput per engine.** The 16,666 s figure is one fan-out pass

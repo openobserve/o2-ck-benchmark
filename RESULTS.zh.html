@@ -1,0 +1,926 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>十亿条日志，三个引擎 —— ClickHouse 对比 OpenObserve 的 Parquet 与 Vortex</title>
+<style>
+  :root {
+    --bg: #fff;
+    --bg-soft: #f3eee2;
+    --ink: #1a1a17;
+    --ink-soft: #4a4a45;
+    --ink-mute: #8a8a82;
+    --rule: #e0d9c8;
+    --accent: #c14920;
+    --accent-soft: #f5dccd;
+    --teal: #0f6e56;
+    --teal-soft: #d4ebe2;
+    --amber: #ba7517;
+    --amber-soft: #faeeda;
+    --blue: #185fa5;
+    --code-bg: #2a2823;
+    --code-ink: #e8e2d0;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { font-size: 17px; }
+
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    padding: 0;
+  }
+
+  .container {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 80px 32px 120px;
+  }
+
+  /* Eyebrow / meta */
+  .eyebrow {
+    font-family: system-ui, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 28px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .eyebrow::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--rule);
+  }
+
+  /* Title */
+  h1 {
+    font-size: 2.6rem;
+    line-height: 1.2;
+    font-weight: 900;
+    letter-spacing: -0.02em;
+    margin-bottom: 32px;
+    color: var(--ink);
+  }
+  h1 .accent {
+    color: var(--accent);
+    font-style: italic;
+    font-weight: 700;
+  }
+
+  /* Lede */
+  .lede {
+    font-size: 1.22rem;
+    line-height: 1.65;
+    color: var(--ink-soft);
+    border-left: 3px solid var(--accent);
+    padding: 4px 0 4px 24px;
+    margin: 40px 0 56px;
+  }
+  .lede strong {
+    color: var(--ink);
+    font-weight: 700;
+  }
+
+  /* Body text */
+  p {
+    margin: 1.1em 0;
+    font-size: 1.0625rem;
+    color: var(--ink);
+  }
+  p strong {
+    font-weight: 700;
+    color: var(--ink);
+    background: linear-gradient(180deg, transparent 60%, var(--amber-soft) 60%);
+    padding: 0 2px;
+  }
+
+  /* Headings */
+  h2 {
+    font-size: 1.85rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    margin: 80px 0 24px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--rule);
+    color: var(--ink);
+    position: relative;
+  }
+  h2::before {
+    content: "§";
+    color: var(--accent);
+    margin-right: 12px;
+    font-style: italic;
+    font-weight: 400;
+  }
+  h3 {
+    font-size: 1.28rem;
+    font-weight: 700;
+    margin: 48px 0 16px;
+    color: var(--ink);
+    font-family: system-ui, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
+    letter-spacing: -0.01em;
+  }
+  h3::before {
+    content: "▸ ";
+    color: var(--accent);
+  }
+
+  /* Code */
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.88em;
+    background: var(--bg-soft);
+    padding: 1px 6px;
+    border-radius: 3px;
+    color: var(--ink);
+    border: 1px solid var(--rule);
+  }
+  pre {
+    background: var(--code-bg);
+    color: var(--code-ink);
+    padding: 20px 24px;
+    border-radius: 6px;
+    overflow-x: auto;
+    margin: 24px 0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.9rem;
+    line-height: 1.65;
+  }
+  pre code {
+    background: transparent;
+    border: none;
+    padding: 0;
+    color: inherit;
+  }
+
+  /* Tables */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 28px 0;
+    font-size: 0.95rem;
+    font-family: system-ui, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
+  }
+  th {
+    text-align: left;
+    padding: 12px 14px;
+    background: var(--bg-soft);
+    border-bottom: 2px solid var(--ink);
+    font-weight: 600;
+    font-size: 0.85rem;
+    letter-spacing: 0.02em;
+  }
+  td {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--rule);
+  }
+  tbody tr:hover { background: rgba(193, 73, 32, 0.04); }
+  td strong { font-weight: 700; color: var(--accent); }
+  td.err { color: var(--accent); font-weight: 600; }
+
+  /* Pull quote */
+  .pull {
+    margin: 48px -32px;
+    padding: 36px 48px;
+    background: var(--ink);
+    color: var(--bg);
+    font-size: 1.4rem;
+    line-height: 1.45;
+    font-weight: 500;
+    position: relative;
+    border-radius: 4px;
+    font-style: italic;
+  }
+  .pull::before {
+    content: "";
+    position: absolute;
+    left: 48px;
+    top: 0;
+    width: 40px;
+    height: 3px;
+    background: var(--accent);
+  }
+  .pull strong {
+    color: #f5dccd;
+    font-weight: 700;
+    background: none;
+    font-style: normal;
+  }
+
+  /* Figure / chart wrapper */
+  figure {
+    margin: 48px -16px;
+    padding: 32px 24px;
+    background: var(--bg-soft);
+    border-radius: 6px;
+    border: 1px solid var(--rule);
+  }
+  figcaption {
+    font-family: system-ui, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
+    font-size: 0.82rem;
+    color: var(--ink-mute);
+    text-align: center;
+    margin-top: 16px;
+    letter-spacing: 0.02em;
+  }
+
+  /* SVG safety */
+  svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+
+  /* List */
+  ul {
+    margin: 1em 0;
+    padding-left: 1.4em;
+  }
+  ul li {
+    margin: 0.5em 0;
+    line-height: 1.7;
+  }
+  ul li::marker { color: var(--accent); }
+
+  /* Footer note */
+  .footnote {
+    margin-top: 64px;
+    padding: 24px 28px;
+    background: var(--bg-soft);
+    border-left: 3px solid var(--ink-mute);
+    font-size: 0.92rem;
+    color: var(--ink-soft);
+  }
+  .footnote strong {
+    color: var(--ink);
+    font-weight: 600;
+    background: none;
+  }
+  .footnote ul {
+    margin: 8px 0 0;
+    padding-left: 1.2em;
+  }
+  .footnote li {
+    margin: 4px 0;
+    line-height: 1.55;
+  }
+
+  /* Divider */
+  hr.divider {
+    border: none;
+    text-align: center;
+    margin: 56px 0;
+    height: 24px;
+  }
+  hr.divider::before {
+    content: "✦  ✦  ✦";
+    color: var(--ink-mute);
+    letter-spacing: 1em;
+    font-size: 0.7rem;
+  }
+
+  /* Chart styles */
+  .bar-chart {
+    margin: 24px 0;
+  }
+
+  /* 2x2 grid for compact comparison */
+  .chart-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px 28px;
+    margin: 12px 0;
+  }
+  .chart-group {
+    min-width: 0;
+  }
+  .chart-group-title {
+    font-family: system-ui, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: var(--ink);
+    margin: 0 0 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--rule);
+    letter-spacing: 0.01em;
+  }
+  .chart-grid .bar-row {
+    grid-template-columns: 130px 1fr 56px;
+    gap: 10px;
+    margin: 8px 0;
+    font-size: 0.76rem;
+  }
+  .chart-grid .bar-track {
+    height: 22px;
+  }
+  .chart-grid .value {
+    font-size: 0.8rem;
+  }
+
+  .bar-row {
+    display: grid;
+    grid-template-columns: 170px 1fr 70px;
+    align-items: center;
+    gap: 14px;
+    margin: 14px 0;
+    font-family: system-ui, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
+    font-size: 0.86rem;
+  }
+  .bar-row .label {
+    color: var(--ink-soft);
+    text-align: right;
+    font-weight: 500;
+  }
+  .bar-row .bar-track {
+    background: var(--bg);
+    border-radius: 3px;
+    height: 32px;
+    position: relative;
+    overflow: hidden;
+    border: 1px solid var(--rule);
+  }
+  .bar-row .bar-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.6s ease;
+  }
+  .bar-row .bar-fill.errbar {
+    background: repeating-linear-gradient(45deg, #c14920, #c14920 6px, #f5dccd 6px, #f5dccd 12px);
+    opacity: 0.55;
+  }
+  .bar-row .value {
+    font-weight: 700;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Legend */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 22px;
+    justify-content: center;
+    font-family: system-ui, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
+    font-size: 0.78rem;
+    color: var(--ink-soft);
+    margin-bottom: 18px;
+  }
+  .legend span::before {
+    content: "";
+    display: inline-block;
+    width: 11px;
+    height: 11px;
+    border-radius: 2px;
+    margin-right: 6px;
+    vertical-align: -1px;
+    background: var(--sw);
+  }
+
+  @media (max-width: 640px) {
+    html { font-size: 16px; }
+    .container { padding: 48px 20px 80px; }
+    h1 { font-size: 1.9rem; }
+    h2 { font-size: 1.5rem; }
+    .pull { margin: 36px -20px; padding: 28px 24px; font-size: 1.15rem; }
+    figure { margin: 36px -8px; padding: 20px 12px; }
+    .bar-row { grid-template-columns: 110px 1fr 56px; font-size: 0.78rem; gap: 10px; }
+    .chart-grid { grid-template-columns: 1fr; gap: 28px; }
+    .chart-grid .bar-row { grid-template-columns: 110px 1fr 50px; }
+  }
+  /* CJK typography tweaks */
+  body { letter-spacing: 0.01em; }
+  h1 { letter-spacing: 0; line-height: 1.28; }
+  h2, h3 { letter-spacing: 0; }
+  p { text-align: justify; text-justify: inter-ideograph; }
+  .lede { line-height: 1.75; }
+  svg text { font-family: system-ui, -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif; }
+</style>
+</head>
+<body>
+<article class="container">
+
+  <div class="eyebrow">OpenObserve · 日志基准测试</div>
+
+  <h1>十亿条日志记录，<span class="accent">三个引擎</span> —— ClickHouse 对比 OpenObserve 的 Parquet 与 Vortex</h1>
+
+  <div class="lede">
+    <strong>我们生成了十亿条日志记录——2 TiB 的 NDJSON——每条记录只序列化一次，然后把完全相同的字节同时写入 ClickHouse 和两个 OpenObserve 实例，每个引擎各占一台独立节点。随后停止写入，对每个后端跑同样的 19 条查询，一次只测一个后端。</strong><br><br>
+    接着我们把整套测试重跑了一遍，只改动 OpenObserve 的一个设置：合并的目标文件大小，从 2 GB 提到 10 GB。这个改动带来的收益，比我们尝试的其他所有改动加起来都大。
+  </div>
+
+  <p>三套单节点部署，各自跑在一台 <code>i8g.2xlarge</code> 上：<strong>ClickHouse 26.7.3.19、设置了 <code>ZO_FILE_FORMAT=parquet</code> 的 OpenObserve v0.92.2，以及同一个二进制但设置了 <code>ZO_FILE_FORMAT=vortex</code> 的实例</strong>。两个引擎都在日志正文上建了全文索引，并在同样三个高基数列上建了布隆过滤器／二级索引，切双方的查询缓存都已关闭。</p>
+
+  <figure>
+    <svg width="100%" viewBox="0 0 680 320" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="三个引擎上 19 条查询的总延迟">
+      <text x="36" y="34" font-family="sans-serif" font-size="15" font-weight="600" fill="#1a1a17">十亿条日志记录，19 条查询的热态总延迟</text>
+      <text x="36" y="56" font-family="sans-serif" font-size="12" fill="#8a8a82">同一份数据 · 同样 19 条查询 · 数据集已冻结 · 每个引擎独占一台节点 · 缓存关闭</text>
+
+      <rect x="190" y="86" width="450.0" height="44" rx="3" fill="#c14920" opacity="0.92"/>
+      <text x="182" y="114" text-anchor="end" font-family="sans-serif" font-size="13" font-weight="600" fill="#4a4a45">ClickHouse</text>
+      <text x="632" y="114" text-anchor="end" font-family="sans-serif" font-size="15" font-weight="700" fill="#ffffff">11.69s</text>
+
+      <rect x="190" y="146" width="134.2" height="44" rx="3" fill="#185fa5" opacity="0.92"/>
+      <text x="182" y="174" text-anchor="end" font-family="sans-serif" font-size="13" font-weight="600" fill="#4a4a45">O2 · Parquet</text>
+      <text x="334" y="174" font-family="sans-serif" font-size="15" font-weight="700" fill="#185fa5">3.49s</text>
+
+      <rect x="190" y="206" width="97.5" height="44" rx="3" fill="#0f6e56"/>
+      <text x="182" y="234" text-anchor="end" font-family="sans-serif" font-size="13" font-weight="600" fill="#4a4a45">O2 · Vortex</text>
+      <text x="297" y="234" font-family="sans-serif" font-size="15" font-weight="700" fill="#0f6e56">2.53s</text>
+
+      <line x1="190" y1="266" x2="640" y2="266" stroke="#c8c1ad" stroke-width="1"/>
+
+      <rect x="360" y="200" width="280" height="52" rx="6" fill="#0f6e56"/>
+      <text x="500" y="223" text-anchor="middle" font-family="sans-serif" font-size="16" font-weight="700" fill="#ffffff">比 ClickHouse 快 4.6 倍</text>
+      <text x="500" y="243" text-anchor="middle" font-family="sans-serif" font-size="10.5" fill="#d4ebe2">磁盘占用只有 0.69 倍，且双方都带全文索引</text>
+
+      <text x="36" y="294" font-family="sans-serif" font-size="11" fill="#8a8a82">ClickHouse 26.7.3.19 · OpenObserve v0.92.2 · i8g.2xlarge · 1,000,000,000 条记录 · 2 TiB 原始 NDJSON</text>
+      <text x="36" y="310" font-family="sans-serif" font-size="11" fill="#8a8a82">OpenObserve 设置 ZO_COMPACT_MAX_FILE_SIZE=10240；柱长按真实比例绘制</text>
+    </svg>
+    <figcaption>图 1 · 合并参数调整之后，整套查询的热态耗时。柱长按真实比例绘制。</figcaption>
+  </figure>
+
+  <h2>测试环境</h2>
+
+  <ul>
+    <li><strong>硬件：</strong>每个后端一台独占的 <code>i8g.2xlarge</code>，数据放在该节点的本地 NVMe 上。三台节点同时运行、不共享任何硬件，因此 CPU、内存、磁盘带宽和页缓存在引擎之间不存在争抢——只有测量环节是串行的，一次只测一个后端</li>
+    <li><strong>压测机：</strong>第四台节点，不在被测之列——一台 <code>c7g.2xlarge</code>，负责跑数据生成器和基准测试客户端。被测的机器不参与驱动测试</li>
+    <li><strong>版本：</strong>ClickHouse <code>26.7.3.19-stable</code>；OpenObserve <code>v0.92.2</code>，两个实例之间只有 <code>ZO_FILE_FORMAT</code> 不同</li>
+    <li><strong>数据：</strong>1,000,000,000 条记录，2,199 GB 原始 NDJSON，事件时间跨度约 4 小时 13 分，27 个字段的 Kubernetes 形态日志</li>
+    <li><strong>写入：</strong>一次扇出写入——生成器把每条记录序列化一次，把同样的字节 POST 到两个 OpenObserve 实例的 <code>/_multi</code>，以及 ClickHouse 的 <code>JSONEachRow</code>。总计 16,666 秒（4 小时 37 分）事件时间，60,002 条/秒，128.1 MB/s。写完即停</li>
+    <li><strong>查询：</strong>19 条—— 8 条走索引的 <code>count()</code>、3 条全量扫描聚合、8 条 <code>SELECT * … ORDER BY _timestamp DESC LIMIT 100</code> 行提取。每条查询都按各引擎的原生写法表达，时间窗口完全固定且一致</li>
+    <li><strong>轮次：</strong>每条查询跑 5 次。在测某个后端之前，直接在该后端节点上清空操作系统页缓存（<code>sync; echo 3 &gt; /proc/sys/vm/drop_caches</code>），所以第 1 次是<em>冷态</em>；<em>热态</em>取 <code>min(run 2, run 3)</code>。数据集有 674 GB 到 1 TB，而内存只有 64 GiB，无论如何页缓存也只能装下其中很小一部分</li>
+    <li><strong>缓存：</strong>ClickHouse 设 <code>enable_filesystem_cache=0</code>；OpenObserve 通过 URL 参数传 <code>use_cache=false</code>——这是该开关唯一生效的地方</li>
+  </ul>
+
+  <h3>索引对等才是难点</h3>
+
+  <p>日志基准测试的胜负由索引决定，所以两个引擎配置了同样的索引：</p>
+
+  <table>
+    <thead>
+      <tr><th>列</th><th>ClickHouse</th><th>OpenObserve（两种格式相同）</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>message</code></td><td><code>text(tokenizer = splitByNonAlpha)</code></td><td>Tantivy 全文索引</td></tr>
+      <tr><td><code>trace_id</code></td><td><code>bloom_filter(0.01)</code></td><td>Tantivy 二级索引 + 外置布隆过滤器，FPP <code>0.01</code></td></tr>
+      <tr><td><code>span_id</code></td><td><code>bloom_filter(0.01)</code></td><td>Tantivy 二级索引</td></tr>
+      <tr><td><code>kubernetes_pod_name</code></td><td><code>bloom_filter(0.01)</code></td><td>Tantivy 二级索引</td></tr>
+      <tr><td><code>kubernetes_container_name</code></td><td class="err">无</td><td class="err">无</td></tr>
+    </tbody>
+  </table>
+
+  <p><code>kubernetes_container_name</code> 是故意不建索引的：它只有 8 个不同取值，索引裁剪不掉任何东西，而只给一边建索引就等于送分。Parquet 内嵌的 row-group 布隆过滤器也被关掉了（<code>ZO_BLOOM_FILTER_PARQUET_ENABLED=false</code>），免得它变成 Parquet 相对 Vortex 的独有优势。ClickHouse 仅按 <code>_timestamp</code> 排序，因此任何结构化列都拿不到排序键带来的额外优势。</p>
+
+  <p><strong>双方各一张表，谁都不做针对查询的物化。</strong>这里的每个引擎都只有一张表、一份数据、一种排序——按 <code>_timestamp</code>——并且只使用通用索引，没有任何为某条查询预先算好的结构。ClickHouse 当然可以用 projection 或物化视图把 <code>kubernetes_pod_name</code> 查询变快；但那是为一条查询额外存一份数据，而 OpenObserve 同样可以用 summary pipeline 把同一列预聚合下来。任何一边开了这个口子，比较的就不再是两个日志存储引擎，而是两套物化策略。所以两边都不用。</p>
+
+  <p>生成器和基准测试客户端跑在第四台节点，一台 <code>c7g.2xlarge</code>。如果压测客户端和某个后端同机，它会在自己正在计时的那台机器上消耗 CPU 做 JSON 序列化和结果解析——而且三个引擎返回的负载大小不同，这种消耗还是不均等的。把它挪出被测节点只多花一台机器，却彻底消除了这一整类问题。由于两边的计时都由服务端上报，压测机与后端之间的网络往返不会算到任何一个引擎头上——这两个选择是配套起作用的。</p>
+
+  <h3>这套基准测试没有测什么</h3>
+
+  <p><strong>各引擎的写入吞吐。</strong>16,666 秒这个数字是一次同时喂给三个后端的扇出写入，速度取决于其中最慢的那个再加上生成器本身。它说明的是三个后端收到了完全一致的数据，而不是三份写入性能结果。</p>
+
+  <p><strong>时间范围裁剪。</strong>查询窗口是套在 4 小时 13 分数据外面的一整年，所以每条查询都会触及全部数据。这对两个引擎完全一致，也是双方的最坏情况——但这里没有任何东西会奖励分区裁剪。</p>
+
+  <p><strong>并发。</strong>所有查询都是串行发出的，机器在此期间处于空闲状态。</p>
+
+  <p><strong>每条查询的扫描行数。</strong>压测程序每次请求都会读取 <code>rows_read</code>（ClickHouse）和 <code>scan_records</code>（OpenObserve），但并没有把它们落盘，所以记录下来的结果只有延迟，没有背后的工作量。真正<em>被</em>记录下来的行数校验发生在存储层——用 <code>system.parts</code> 对比 <code>file_list</code>——它确认三个后端都持有同样的 1,000,000,000 行。</p>
+
+  <p>还有一点值得说明：<strong>OpenObserve 的 <code>took</code> 只精确到整毫秒。</strong>在 30 毫秒以下，这种量化误差本身就是差距的一部分，下文表格中两三毫秒的差距应当读作平手，而不是胜负。</p>
+
+  <h2>存储</h2>
+
+  <p>数据取自各引擎自己的元数据存储—— ClickHouse 用 <code>system.parts</code> 加 <code>system.data_skipping_indices</code>，OpenObserve 用背后由 <code>file_list</code> 支撑的 stream-stats API。两边的数字都是压缩后的数据<strong>加上</strong>索引：</p>
+
+  <figure>
+    <svg width="100%" viewBox="0 0 680 152" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="存储占用">
+      <text x="0" y="12" font-family="sans-serif" font-size="12" font-weight="700" fill="#1a1a17">磁盘占用，压缩数据 + 索引（GB，越低越好）</text>
+      <line x1="0" y1="20" x2="590" y2="20" stroke="#e0d9c8" stroke-width="1"/>
+      <text x="102" y="43" text-anchor="end" font-family="sans-serif" font-size="11" fill="#4a4a45">原始 NDJSON</text>
+      <rect x="110" y="29" width="420.0" height="18" rx="2" fill="#8a8a82" opacity="0.92"/>
+      <text x="538" y="43" font-family="sans-serif" font-size="11" font-weight="700" fill="#1a1a17">2,199 GB</text>
+      <text x="102" y="70" text-anchor="end" font-family="sans-serif" font-size="11" fill="#4a4a45">ClickHouse</text>
+      <rect x="110" y="56" width="196.1" height="18" rx="2" fill="#c14920" opacity="0.92"/>
+      <text x="538" y="70" font-family="sans-serif" font-size="11" font-weight="700" fill="#1a1a17">1,026 GB</text>
+      <text x="102" y="97" text-anchor="end" font-family="sans-serif" font-size="11" fill="#4a4a45">O2 · Parquet</text>
+      <rect x="110" y="83" width="128.6" height="18" rx="2" fill="#185fa5" opacity="0.92"/>
+      <text x="538" y="97" font-family="sans-serif" font-size="11" font-weight="700" fill="#1a1a17">674 GB</text>
+      <text x="102" y="124" text-anchor="end" font-family="sans-serif" font-size="11" fill="#4a4a45">O2 · Vortex</text>
+      <rect x="110" y="110" width="135.7" height="18" rx="2" fill="#0f6e56" opacity="0.92"/>
+      <text x="538" y="124" font-family="sans-serif" font-size="11" font-weight="700" fill="#1a1a17">711 GB</text>
+      <text x="0" y="145" font-family="sans-serif" font-size="10.5" fill="#8a8a82">十亿条记录。两个引擎的数字都包含各自的全文索引。</text>
+    </svg>
+    <figcaption>图 2 · 十亿条记录的磁盘占用，含索引。</figcaption>
+  </figure>
+
+  <table>
+    <thead>
+      <tr><th>系统</th><th>磁盘占用</th><th>相对原始数据压缩比</th><th>相对 ClickHouse</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>ClickHouse</td><td>1,026.5 GB</td><td>2.14×</td><td>—</td></tr>
+      <tr><td>O2 · Parquet</td><td><strong>673.5 GB</strong></td><td><strong>3.26×</strong></td><td><strong>0.66×</strong></td></tr>
+      <tr><td>O2 · Vortex</td><td>710.7 GB</td><td>3.09×</td><td>0.69×</td></tr>
+    </tbody>
+  </table>
+
+  <p>OpenObserve 存放同样十亿条记录，<strong>比 ClickHouse 少用三分之一的空间</strong>，同时还带着一份 Tantivy 全文索引——ClickHouse 的 <code>text()</code> 索引正是它的对应物。把合并目标提到 10 GB 让两个 OpenObserve 实例的占用各增加了 0.49%——更大的合并单元产出的文件略大一点，与它对查询延迟的影响相比这点差异只是噪声。</p>
+
+  <h2>第一轮 · 默认配置</h2>
+
+  <p>当 <code>ZO_COMPACT_MAX_FILE_SIZE</code> 还是默认的 2 GB 时，总量看起来是 OpenObserve 完胜—— ClickHouse 整套 11,578 毫秒，对上 4,663 毫秒（Parquet）和 4,106 毫秒（Vortex）——但逐条查询的战绩并非如此。<strong>OpenObserve 在 Parquet 上只赢了 19 条中的 9 条，在 Vortex 上赢了 10 条。</strong>总量是被两条查询拉起来的：那两条 ClickHouse 要花好几秒，而 OpenObserve 只要十分之一秒。</p>
+
+  <p>而藏在第一轮数字里的，是整套基准测试中最有价值的结果——一个拒绝变化的数字：</p>
+
+  <table>
+    <thead>
+      <tr><th>第一轮，O2 · Parquet，热态</th><th><code>trace_id</code></th><th><code>span_id</code></th><th>稀有词</th><th>常见词</th><th>容器 + 稀有词</th><th><code>pod_name</code></th></tr>
+    </thead>
+    <tbody>
+      <tr><td>毫秒</td><td>97</td><td>96</td><td>96</td><td>96</td><td>97</td><td>100</td></tr>
+    </tbody>
+  </table>
+
+  <p>六条选择性完全不同的查询，命中三种不同的索引类型——一次由布隆过滤器支撑的 ID 查找、一个几乎匹配不到任何内容的全文词、一个匹配数据集中很大比例的全文词、一个高基数列上的二级索引——它们的耗时全都落在 96 到 100 毫秒之间。</p>
+
+  <div class="pull">
+    这不是六份查询开销，而是<strong>一份在所有查询开始之前就已付出的固定开销</strong>，真正的查询工作全都淹没在它下面。
+  </div>
+
+  <h2>第二轮 · 只动一个配置：<code>ZO_COMPACT_MAX_FILE_SIZE=10240</code></h2>
+
+  <p>同样的数据、同样的查询、同样的机器。只把 OpenObserve 的合并目标文件大小从默认 2 GB 提到 10 GB——数据文件数量大约变成原来的五分之一，每个文件大五倍。ClickHouse 原封不动地重测了一遍，因此它是这一轮的对照组。</p>
+
+  <h3>先看对照组</h3>
+
+  <table>
+    <thead>
+      <tr><th>ClickHouse，两轮之间未做任何改动</th><th>漂移</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>19 条查询总耗时</td><td>11,578 ms → 11,694 ms（<strong>+1.0%</strong>）</td></tr>
+      <tr><td>逐条查询漂移中位数</td><td>1.2%</td></tr>
+      <tr><td>最大单条查询漂移</td><td>17.5%，发生在一条 22 毫秒的查询上</td></tr>
+    </tbody>
+  </table>
+
+  <p>这就是整套压测框架的运行间噪声水平。下面 OpenObserve 的每一项变化都远远超出这个范围。</p>
+
+  <h3>96 毫秒的地板被击穿</h3>
+
+  <figure>
+    <svg width="100%" viewBox="0 0 680 206" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="提高合并文件大小前后的索引 count 查询对比">
+      <text x="0" y="12" font-family="sans-serif" font-size="12" font-weight="700" fill="#1a1a17">第一轮 · 2 GB 文件（毫秒）</text>
+      <line x1="0" y1="20" x2="322" y2="20" stroke="#e0d9c8" stroke-width="1"/>
+      <text x="104" y="39" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">trace_id</text>
+      <rect x="112" y="29" width="107.8" height="14" rx="2" fill="#ba7517" opacity="0.92"/>
+      <text x="270" y="39" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">97</text>
+      <text x="104" y="59" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">span_id</text>
+      <rect x="112" y="49" width="106.7" height="14" rx="2" fill="#ba7517" opacity="0.92"/>
+      <text x="270" y="59" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">96</text>
+      <text x="104" y="79" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">稀有词</text>
+      <rect x="112" y="69" width="106.7" height="14" rx="2" fill="#ba7517" opacity="0.92"/>
+      <text x="270" y="79" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">96</text>
+      <text x="104" y="99" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">常见词</text>
+      <rect x="112" y="89" width="106.7" height="14" rx="2" fill="#ba7517" opacity="0.92"/>
+      <text x="270" y="99" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">96</text>
+      <text x="104" y="119" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">容器 + trace_id</text>
+      <rect x="112" y="109" width="34.4" height="14" rx="2" fill="#ba7517" opacity="0.92"/>
+      <text x="270" y="119" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">31</text>
+      <text x="104" y="139" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">容器 + 稀有词</text>
+      <rect x="112" y="129" width="107.8" height="14" rx="2" fill="#ba7517" opacity="0.92"/>
+      <text x="270" y="139" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">97</text>
+      <text x="104" y="159" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">两个词</text>
+      <rect x="112" y="149" width="146.7" height="14" rx="2" fill="#ba7517" opacity="0.92"/>
+      <text x="270" y="159" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">132</text>
+      <text x="104" y="179" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">pod_name</text>
+      <rect x="112" y="169" width="111.1" height="14" rx="2" fill="#ba7517" opacity="0.92"/>
+      <text x="270" y="179" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">100</text>
+      <text x="340" y="12" font-family="sans-serif" font-size="12" font-weight="700" fill="#1a1a17">第二轮 · 10 GB 文件（毫秒）</text>
+      <line x1="340" y1="20" x2="662" y2="20" stroke="#e0d9c8" stroke-width="1"/>
+      <text x="444" y="39" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">trace_id</text>
+      <rect x="452" y="29" width="28.9" height="14" rx="2" fill="#185fa5" opacity="0.92"/>
+      <text x="610" y="39" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">26</text>
+      <text x="444" y="59" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">span_id</text>
+      <rect x="452" y="49" width="27.8" height="14" rx="2" fill="#185fa5" opacity="0.92"/>
+      <text x="610" y="59" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">25</text>
+      <text x="444" y="79" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">稀有词</text>
+      <rect x="452" y="69" width="26.7" height="14" rx="2" fill="#185fa5" opacity="0.92"/>
+      <text x="610" y="79" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">24</text>
+      <text x="444" y="99" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">常见词</text>
+      <rect x="452" y="89" width="27.8" height="14" rx="2" fill="#185fa5" opacity="0.92"/>
+      <text x="610" y="99" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">25</text>
+      <text x="444" y="119" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">容器 + trace_id</text>
+      <rect x="452" y="109" width="21.1" height="14" rx="2" fill="#185fa5" opacity="0.92"/>
+      <text x="610" y="119" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">19</text>
+      <text x="444" y="139" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">容器 + 稀有词</text>
+      <rect x="452" y="129" width="31.1" height="14" rx="2" fill="#185fa5" opacity="0.92"/>
+      <text x="610" y="139" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">28</text>
+      <text x="444" y="159" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">两个词</text>
+      <rect x="452" y="149" width="45.6" height="14" rx="2" fill="#185fa5" opacity="0.92"/>
+      <text x="610" y="159" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">41</text>
+      <text x="444" y="179" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">pod_name</text>
+      <rect x="452" y="169" width="30.0" height="14" rx="2" fill="#185fa5" opacity="0.92"/>
+      <text x="610" y="179" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">27</text>
+      <text x="0" y="198" font-family="sans-serif" font-size="10.5" fill="#8a8a82">O2 · Parquet，走索引的 count() 查询，热态。两侧共用同一刻度。</text>
+    </svg>
+    <figcaption>图 3 · 同样这八条走索引的 <code>count()</code> 查询，调整前后对比。两侧共用同一刻度。</figcaption>
+  </figure>
+
+  <p>那六条被钉在 96–100 毫秒的查询，落到了 <strong>24–28 毫秒</strong>——大约降低 3.8 倍，与文件数量减少约 5 倍相当接近。这正是「每文件固定开销」的特征：打开文件、读取元数据、加载索引段、合并结果。它随查询触及的文件数量增长，而不随读取的数据量增长——这也正是为什么六条做着完全不同工作的查询会给出一模一样的数字。文件更少更大，这份开销就少付几次。</p>
+
+  <p>这也解释了整套查询其余部分的形态。那些本就被真实计算主导的查询几乎纹丝不动：<strong>Top-N 命名空间</strong>——在十亿行上做全量扫描加分组，每文件开销在其中只是舍入误差——在 Parquet 上只提升 1.07 倍，Vortex 上 1.14 倍。</p>
+
+  <table>
+    <thead>
+      <tr><th>查询</th><th>Parquet 2 GB</th><th>Parquet 10 GB</th><th>Δ</th><th>Vortex 2 GB</th><th>Vortex 10 GB</th><th>Δ</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>单个 <code>trace_id</code> 查找</td><td>97</td><td>26</td><td><strong>3.73×</strong></td><td>99</td><td>27</td><td><strong>3.67×</strong></td></tr>
+      <tr><td>单个 <code>span_id</code> 查找</td><td>96</td><td>25</td><td><strong>3.84×</strong></td><td>94</td><td>26</td><td><strong>3.62×</strong></td></tr>
+      <tr><td><code>message</code> 中的稀有词</td><td>96</td><td>24</td><td><strong>4.00×</strong></td><td>95</td><td>24</td><td><strong>3.96×</strong></td></tr>
+      <tr><td><code>message</code> 中的常见词</td><td>96</td><td>25</td><td><strong>3.84×</strong></td><td>95</td><td>27</td><td><strong>3.52×</strong></td></tr>
+      <tr><td>容器 + <code>trace_id</code></td><td>31</td><td>19</td><td><strong>1.63×</strong></td><td>36</td><td>24</td><td><strong>1.50×</strong></td></tr>
+      <tr><td>容器 + 稀有词</td><td>97</td><td>28</td><td><strong>3.46×</strong></td><td>104</td><td>32</td><td><strong>3.25×</strong></td></tr>
+      <tr><td>两个词（常见 AND 稀有）</td><td>132</td><td>41</td><td><strong>3.22×</strong></td><td>133</td><td>45</td><td><strong>2.96×</strong></td></tr>
+      <tr><td>高基数 <code>pod_name</code></td><td>100</td><td>27</td><td><strong>3.70×</strong></td><td>103</td><td>27</td><td><strong>3.81×</strong></td></tr>
+      <tr><td>直方图，1 小时分桶</td><td>169</td><td>63</td><td><strong>2.68×</strong></td><td>172</td><td>63</td><td><strong>2.73×</strong></td></tr>
+      <tr><td>Top-N 命名空间</td><td>1,607</td><td>1,500</td><td>1.07×</td><td>1,371</td><td>1,204</td><td>1.14×</td></tr>
+      <tr><td>带过滤的直方图（按词）</td><td>977</td><td>595</td><td><strong>1.64×</strong></td><td>974</td><td>598</td><td><strong>1.63×</strong></td></tr>
+      <tr><td><code>trace_id</code> → 100 行</td><td>102</td><td>77</td><td><strong>1.32×</strong></td><td>63</td><td>44</td><td><strong>1.43×</strong></td></tr>
+      <tr><td><code>span_id</code> → 100 行</td><td>141</td><td>73</td><td><strong>1.93×</strong></td><td>135</td><td>53</td><td><strong>2.55×</strong></td></tr>
+      <tr><td>稀有词 → 100 行</td><td>142</td><td>66</td><td><strong>2.15×</strong></td><td>135</td><td>52</td><td><strong>2.60×</strong></td></tr>
+      <tr><td>常见词 → 100 行</td><td>68</td><td>52</td><td><strong>1.31×</strong></td><td>50</td><td>47</td><td>1.06×</td></tr>
+      <tr><td>容器 + <code>trace_id</code> → 100 行</td><td>77</td><td>56</td><td><strong>1.38×</strong></td><td>51</td><td>32</td><td><strong>1.59×</strong></td></tr>
+      <tr><td>容器 + 稀有词 → 100 行</td><td>128</td><td>55</td><td><strong>2.33×</strong></td><td>109</td><td>38</td><td><strong>2.87×</strong></td></tr>
+      <tr><td>两个词 → 100 行</td><td>186</td><td>81</td><td><strong>2.30×</strong></td><td>173</td><td>67</td><td><strong>2.58×</strong></td></tr>
+      <tr><td><code>pod_name</code> → 100 行</td><td>321</td><td class="err">654</td><td class="err">0.49×</td><td>114</td><td>103</td><td>1.11×</td></tr>
+    </tbody>
+  </table>
+
+  <table>
+    <thead>
+      <tr><th></th><th>Parquet</th><th>Vortex</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>19 条查询总耗时</td><td>4,663 → 3,487 ms</td><td>4,106 → 2,533 ms</td></tr>
+      <tr><td>单条查询几何平均</td><td>141.6 → 66.3 ms</td><td>124.3 → 54.3 ms</td></tr>
+      <tr><td>几何平均加速比</td><td><strong>2.14×</strong></td><td><strong>2.29×</strong></td></tr>
+      <tr><td>有提升的查询数</td><td>19 条中 18 条</td><td>19 条中 19 条</td></tr>
+    </tbody>
+  </table>
+
+  <h3>唯一变慢的那条</h3>
+
+  <figure>
+    <svg width="100%" viewBox="0 0 680 178" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="唯一变慢的那条查询">
+      <text x="0" y="12" font-family="sans-serif" font-size="12" font-weight="700" fill="#1a1a17">SELECT * WHERE kubernetes_pod_name = … ORDER BY _timestamp DESC LIMIT 100（毫秒，热态）</text>
+      <line x1="0" y1="20" x2="580" y2="20" stroke="#e0d9c8" stroke-width="1"/>
+      <text x="112" y="43" text-anchor="end" font-family="sans-serif" font-size="11" fill="#4a4a45">Parquet · 2 GB</text>
+      <rect x="120" y="29" width="164.6" height="18" rx="2" fill="#ba7517" opacity="0.92"/>
+      <text x="528" y="43" font-family="sans-serif" font-size="11" font-weight="700" fill="#1a1a17">321</text>
+      <text x="112" y="69" text-anchor="end" font-family="sans-serif" font-size="11" fill="#4a4a45">Parquet · 10 GB</text>
+      <rect x="120" y="55" width="335.4" height="18" rx="2" fill="#185fa5" opacity="0.92"/>
+      <text x="528" y="69" font-family="sans-serif" font-size="11" font-weight="700" fill="#1a1a17">654</text>
+      <text x="112" y="95" text-anchor="end" font-family="sans-serif" font-size="11" fill="#4a4a45">Vortex · 2 GB</text>
+      <rect x="120" y="81" width="58.5" height="18" rx="2" fill="#ba7517" opacity="0.92"/>
+      <text x="528" y="95" font-family="sans-serif" font-size="11" font-weight="700" fill="#1a1a17">114</text>
+      <text x="112" y="121" text-anchor="end" font-family="sans-serif" font-size="11" fill="#4a4a45">Vortex · 10 GB</text>
+      <rect x="120" y="107" width="52.8" height="18" rx="2" fill="#0f6e56" opacity="0.92"/>
+      <text x="528" y="121" font-family="sans-serif" font-size="11" font-weight="700" fill="#1a1a17">103</text>
+      <text x="112" y="147" text-anchor="end" font-family="sans-serif" font-size="11" fill="#4a4a45">ClickHouse</text>
+      <rect x="120" y="133" width="100.0" height="18" rx="2" fill="#c14920" opacity="0.92"/>
+      <text x="528" y="147" font-family="sans-serif" font-size="11" font-weight="700" fill="#1a1a17">195</text>
+      <text x="560" y="69" font-family="sans-serif" font-size="11" font-weight="700" fill="#c14920">← 慢 2.0 倍</text>
+      <text x="0" y="170" font-family="sans-serif" font-size="10.5" fill="#8a8a82">琥珀色 = 2 GB 文件，引擎主题色 = 10 GB 文件。38 项测量中唯一的一次退化。</text>
+    </svg>
+    <figcaption>图 4 · 按 pod 名称做 <code>SELECT *</code>，按时间戳取前 100 行。Parquet 慢了一倍；Vortex 没有。</figcaption>
+  </figure>
+
+  <p>按 <code>kubernetes_pod_name</code> 取 100 行在 <strong>Parquet 上慢了 2.0 倍</strong>——热态 321 毫秒 → 654 毫秒，冷态 395 毫秒 → 857 毫秒。这是 38 项测量中唯一一次退化，有必要精确说明数据到底支持哪些结论：</p>
+
+  <ul>
+    <li>它是 <strong>Parquet 特有的</strong>。同样的查询、同样的数据、同样的 10 GB 上限，在 Vortex 上反而<em>更快</em>了—— 114 毫秒 → 103 毫秒。所以原因在读取路径上，而不在合并本身</li>
+    <li>它是 <strong>行提取特有的</strong>。<code>pod_name</code> 的 <code>count()</code> 查询用的是同一个二级索引、同一批行，却提速了 3.70 倍。只有真正物化行数据的那条退化了</li>
+    <li>它在<strong>冷态和热态下都出现</strong>，比例相近，所以不是缓存造成的假象</li>
+  </ul>
+
+  <p>可能的机制——这是一个假设，本轮测试并没有做剖析——是：top-K 行提取必须从索引指向的那些文件里物化候选行，而 10 GB 的 Parquet 文件把这份工作的单位放大了五倍：footer 大了五倍需要反序列化、要跳过的 row group 多了五倍、要解压的列块更大——而这一切只为返回 100 行。Vortex 的布局支持惰性寻址，所以同样的查找不会随文件大小成比例地付出代价。</p>
+
+  <p>实践上的结论：<strong>如果你的负载以「在带二级索引的高基数列上做 <code>SELECT * … LIMIT n</code>」为主，并且用的是 Parquet，那么在调高这个配置之前先测一测。</strong>在 Vortex 上则是纯粹的收益。</p>
+
+  <hr class="divider">
+
+  <h2>第二轮 · 正面对决</h2>
+
+  <p>热态中位数，单位毫秒，三个系统均为第二轮配置。加粗为该行最快。</p>
+
+  <h3>1 · 走索引的 <code>count()</code></h3>
+
+  <table>
+    <thead>
+      <tr><th>查询</th><th>ClickHouse</th><th>O2 · Parquet</th><th>O2 · Vortex</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>单个 <code>trace_id</code> 查找</td><td>87</td><td><strong>26</strong></td><td>27</td></tr>
+      <tr><td>单个 <code>span_id</code> 查找</td><td>80</td><td><strong>25</strong></td><td>26</td></tr>
+      <tr><td><code>message</code> 中的稀有词</td><td><strong>24</strong></td><td>24</td><td>24</td></tr>
+      <tr><td><code>message</code> 中的常见词</td><td>1,891</td><td><strong>25</strong></td><td>27</td></tr>
+      <tr><td>容器 + <code>trace_id</code></td><td>93</td><td><strong>19</strong></td><td>24</td></tr>
+      <tr><td>容器 + 稀有词</td><td>29</td><td><strong>28</strong></td><td>32</td></tr>
+      <tr><td>两个词（常见 AND 稀有）</td><td><strong>25</strong></td><td>41</td><td>45</td></tr>
+      <tr><td>高基数 <code>pod_name</code></td><td>2,949</td><td><strong>27</strong></td><td><strong>27</strong></td></tr>
+    </tbody>
+  </table>
+
+  <h3>2 · 全量扫描聚合</h3>
+
+  <table>
+    <thead>
+      <tr><th>查询</th><th>ClickHouse</th><th>O2 · Parquet</th><th>O2 · Vortex</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>直方图，1 小时分桶</td><td>1,591</td><td><strong>63</strong></td><td><strong>63</strong></td></tr>
+      <tr><td>Top-N 命名空间</td><td>1,639</td><td>1,500</td><td><strong>1,204</strong></td></tr>
+      <tr><td>带过滤的直方图（按词）</td><td>2,248</td><td><strong>595</strong></td><td>598</td></tr>
+    </tbody>
+  </table>
+
+  <h3>3 · <code>SELECT * … ORDER BY _timestamp DESC LIMIT 100</code></h3>
+
+  <table>
+    <thead>
+      <tr><th>查询</th><th>ClickHouse</th><th>O2 · Parquet</th><th>O2 · Vortex</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>trace_id</code> → 100 行</td><td>190</td><td>77</td><td><strong>44</strong></td></tr>
+      <tr><td><code>span_id</code> → 100 行</td><td>158</td><td>73</td><td><strong>53</strong></td></tr>
+      <tr><td>稀有词 → 100 行</td><td>86</td><td>66</td><td><strong>52</strong></td></tr>
+      <tr><td>常见词 → 100 行</td><td><strong>26</strong></td><td>52</td><td>47</td></tr>
+      <tr><td>容器 + <code>trace_id</code> → 100 行</td><td>187</td><td>56</td><td><strong>32</strong></td></tr>
+      <tr><td>容器 + 稀有词 → 100 行</td><td>104</td><td>55</td><td><strong>38</strong></td></tr>
+      <tr><td>两个词 → 100 行</td><td>92</td><td>81</td><td><strong>67</strong></td></tr>
+      <tr><td><code>pod_name</code> → 100 行</td><td>195</td><td class="err">654</td><td><strong>103</strong></td></tr>
+    </tbody>
+  </table>
+
+  <table>
+    <thead>
+      <tr><th></th><th>ClickHouse</th><th>O2 · Parquet</th><th>O2 · Vortex</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>19 条查询总耗时（热态）</td><td>11,694 ms</td><td>3,487 ms</td><td><strong>2,533 ms</strong></td></tr>
+      <tr><td>相对 ClickHouse</td><td>—</td><td>3.35×</td><td><strong>4.62×</strong></td></tr>
+      <tr><td>单条查询几何平均</td><td>181.9 ms</td><td>66.3 ms</td><td><strong>54.3 ms</strong></td></tr>
+      <tr><td>逐条查询几何平均加速比</td><td>—</td><td>2.74×</td><td><strong>3.35×</strong></td></tr>
+      <tr><td>快于 ClickHouse 的查询数</td><td>—</td><td>19 条中 15 条</td><td>19 条中 15 条</td></tr>
+    </tbody>
+  </table>
+
+  <p>ClickHouse 在 <strong>19 条中的 3 条</strong>上是三者最快的，其中一条还只是毫秒分辨率下限上的平手。合并参数的调整让 OpenObserve 从<em>「总量赢、单条大多输」</em>变成了<strong>「19 条里赢 15 条」</strong>：它的几何平均优势在 Parquet 上从 1.26 倍提升到 2.74 倍，在 Vortex 上从 1.44 倍提升到 3.35 倍。</p>
+
+  <h3>差距最大的地方</h3>
+
+  <figure>
+    <svg width="100%" viewBox="0 0 680 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="ClickHouse 最慢的四条查询">
+      <text x="0" y="12" font-family="sans-serif" font-size="12" font-weight="700" fill="#1a1a17">pod_name count() —— 109 倍（毫秒）</text>
+      <line x1="0" y1="20" x2="322" y2="20" stroke="#e0d9c8" stroke-width="1"/>
+      <text x="84" y="39" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">ClickHouse</text>
+      <rect x="92" y="29" width="170.0" height="14" rx="2" fill="#c14920" opacity="0.92"/>
+      <text x="270" y="39" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">2,949</text>
+      <text x="84" y="59" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">O2 · Parquet</text>
+      <rect x="92" y="49" width="2.0" height="14" rx="2" fill="#185fa5" opacity="0.92"/>
+      <text x="270" y="59" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">27</text>
+      <text x="84" y="79" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">O2 · Vortex</text>
+      <rect x="92" y="69" width="2.0" height="14" rx="2" fill="#0f6e56" opacity="0.92"/>
+      <text x="270" y="79" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">27</text>
+      <text x="340" y="12" font-family="sans-serif" font-size="12" font-weight="700" fill="#1a1a17">常见词 count() —— 70 倍（毫秒）</text>
+      <line x1="340" y1="20" x2="662" y2="20" stroke="#e0d9c8" stroke-width="1"/>
+      <text x="424" y="39" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">ClickHouse</text>
+      <rect x="432" y="29" width="170.0" height="14" rx="2" fill="#c14920" opacity="0.92"/>
+      <text x="610" y="39" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">1,891</text>
+      <text x="424" y="59" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">O2 · Parquet</text>
+      <rect x="432" y="49" width="2.2" height="14" rx="2" fill="#185fa5" opacity="0.92"/>
+      <text x="610" y="59" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">25</text>
+      <text x="424" y="79" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">O2 · Vortex</text>
+      <rect x="432" y="69" width="2.4" height="14" rx="2" fill="#0f6e56" opacity="0.92"/>
+      <text x="610" y="79" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">27</text>
+      <text x="0" y="112" font-family="sans-serif" font-size="12" font-weight="700" fill="#1a1a17">按小时直方图 —— 25 倍（毫秒）</text>
+      <line x1="0" y1="120" x2="322" y2="120" stroke="#e0d9c8" stroke-width="1"/>
+      <text x="84" y="139" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">ClickHouse</text>
+      <rect x="92" y="129" width="170.0" height="14" rx="2" fill="#c14920" opacity="0.92"/>
+      <text x="270" y="139" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">1,591</text>
+      <text x="84" y="159" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">O2 · Parquet</text>
+      <rect x="92" y="149" width="6.7" height="14" rx="2" fill="#185fa5" opacity="0.92"/>
+      <text x="270" y="159" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">63</text>
+      <text x="84" y="179" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">O2 · Vortex</text>
+      <rect x="92" y="169" width="6.7" height="14" rx="2" fill="#0f6e56" opacity="0.92"/>
+      <text x="270" y="179" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">63</text>
+      <text x="340" y="112" font-family="sans-serif" font-size="12" font-weight="700" fill="#1a1a17">带过滤的直方图 —— 3.8 倍（毫秒）</text>
+      <line x1="340" y1="120" x2="662" y2="120" stroke="#e0d9c8" stroke-width="1"/>
+      <text x="424" y="139" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">ClickHouse</text>
+      <rect x="432" y="129" width="170.0" height="14" rx="2" fill="#c14920" opacity="0.92"/>
+      <text x="610" y="139" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">2,248</text>
+      <text x="424" y="159" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">O2 · Parquet</text>
+      <rect x="432" y="149" width="45.0" height="14" rx="2" fill="#185fa5" opacity="0.92"/>
+      <text x="610" y="159" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">595</text>
+      <text x="424" y="179" text-anchor="end" font-family="sans-serif" font-size="10.5" fill="#4a4a45">O2 · Vortex</text>
+      <rect x="432" y="169" width="45.2" height="14" rx="2" fill="#0f6e56" opacity="0.92"/>
+      <text x="610" y="179" font-family="sans-serif" font-size="10.5" font-weight="700" fill="#1a1a17">598</text>
+      <text x="0" y="212" font-family="sans-serif" font-size="10.5" fill="#8a8a82">热态中位数，第二轮。每个面板按各自的最大值缩放。</text>
+    </svg>
+    <figcaption>图 5 · ClickHouse 最慢的四条查询。每个面板按各自的最大值缩放。</figcaption>
+  </figure>
+
+  <p><code>kubernetes_pod_name</code> 在 ClickHouse 一侧带有 <code>bloom_filter(0.01)</code> 跳数索引，而这条 count 仍然要花 <strong>2.9 秒</strong>。布隆过滤器只能排除 granule，而对于一个在十亿行中处处出现的 pod，能被排除的 granule 极少——于是它退化成了扫描。OpenObserve 的 Tantivy 二级索引直接返回匹配的行集合，只要 27 毫秒。常见词 count 背后是同样的不对称：ClickHouse 的 <code>text()</code> 索引到处都能找到这个词，然后还得把它们数一遍；OpenObserve 直接从索引里把计数读出来。</p>
+
+  <h3>OpenObserve 没有完胜的四条查询</h3>
+
+  <table>
+    <thead>
+      <tr><th>查询</th><th>ClickHouse</th><th>Parquet</th><th>Vortex</th><th>原因</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>message</code> 中的稀有词</td><td>24</td><td>24</td><td>24</td><td>在测量分辨率下限上的平手</td></tr>
+      <tr><td>两个词（常见 AND 稀有）</td><td><strong>25</strong></td><td>41</td><td>45</td><td>ClickHouse 廉价地求交两条 <code>hasAnyTokens</code> 倒排列表</td></tr>
+      <tr><td>常见词 → 100 行</td><td><strong>26</strong></td><td>52</td><td>47</td><td>在排序键上做 top-K，且这个词到处都匹配——读最新的几个 granule 就能收工</td></tr>
+      <tr><td><code>pod_name</code> → 100 行</td><td>195</td><td class="err">654</td><td><strong>103</strong></td><td>仅 Parquet——就是上文那次退化；这一行 Vortex 胜出</td></tr>
+    </tbody>
+  </table>
+
+  <p>其中真正算是 ClickHouse 同时战胜两种格式的只有两条：稀有词 count 是平手，而 <code>pod_name</code> 行提取被 Vortex 拿下。这几条里有规律可循。<strong>ClickHouse 赢在它的 <code>ORDER BY (_timestamp)</code> 排序键能让它靠读取表尾来回答 top-K 查询</strong>，以及一个高选择性词让文本索引几乎包办了全部工作的场景。而只要查询需要扫描或聚合，它就会以 25 倍、70 倍、109 倍的差距落败。</p>
+
+  <h2>Parquet 对比 Vortex</h2>
+
+  <p>两个 OpenObserve 实例共用同一个二进制、同一份数据集、同一套索引配置，以及除 <code>ZO_FILE_FORMAT</code> 之外完全相同的环境变量。结果按查询形态干净利落地分成了几类：</p>
+
+  <table>
+    <thead>
+      <tr><th></th><th>Parquet</th><th>Vortex</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>19 条查询总耗时（第二轮，热态）</td><td>3,487 ms</td><td><strong>2,533 ms</strong></td></tr>
+      <tr><td><code>count()</code> 组，8 条查询</td><td><strong>215 ms</strong></td><td>232 ms</td></tr>
+      <tr><td>聚合组，3 条查询</td><td>2,158 ms</td><td><strong>1,865 ms</strong></td></tr>
+      <tr><td>行提取组，8 条查询</td><td>1,114 ms</td><td><strong>436 ms</strong></td></tr>
+      <tr><td>存储</td><td><strong>673.5 GB</strong></td><td>710.7 GB</td></tr>
+    </tbody>
+  </table>
+
+  <p><strong>它们在走索引的 <code>count()</code> 上打平</strong>——两者都是从同一份 Tantivy 索引里取答案，存储格式几乎不参与。差距完全出在两组真正要读数据的查询上。</p>
+
+  <p><strong>行提取由 Vortex 以 2.6 倍胜出</strong>，八条它全赢。从大文件里物化 100 行宽记录，正是惰性寻址布局的用武之地——这也解释了为什么让 Parquet 在 <code>pod_name</code> 行提取上慢一倍的那次退化，对 Vortex 完全没有影响。<strong>聚合由 Vortex 以 1.16 倍胜出</strong>，其中几乎全部来自 Top-N 命名空间。<strong>存储则由 Parquet 以 5.5% 胜出。</strong></p>
+
+  <p>对于日志检索类负载——找出匹配的日志行，然后把这些行显示出来—— Vortex 是更好的默认选择，674 GB 里的这 37 GB 差额远远不足以抵消它带来的优势。</p>
+
+  <hr class="divider">
+
+  <h2>结论</h2>
+
+  <ul>
+    <li><strong>查询总耗时：</strong>在这套 19 条查询上，OpenObserve <strong>比 ClickHouse 快 3.4 倍（Parquet）到 4.6 倍（Vortex）</strong>，磁盘占用少三分之一，而且两边都带全文索引</li>
+    <li><strong>差距并不均匀：</strong>对于那些能吃到 <code>_timestamp</code> 排序键红利的小型高选择性查询，ClickHouse 有竞争力甚至更优；但只要涉及扫描或聚合，它就会慢 25 到 109 倍</li>
+    <li><strong>一个配置配置比格式选择更重要：</strong>把 <code>ZO_COMPACT_MAX_FILE_SIZE</code> 从 2 GB 提到 10 GB 带来了 2.1–2.3 倍的几何平均提升，正是它把「19 中赢 9」变成了「19 中赢 15」</li>
+    <li><strong>它有一个尖锐的边角：</strong>在带二级索引的高基数列上，Parquet 的行提取慢了一倍。Vortex 没有这个问题</li>
+  </ul>
+
+  <h3>自己动手验证</h3>
+
+  <p><strong>这里没有任何一个数字是要你凭信任接受的截图。</strong>整套基准测试——数据生成器、ClickHouse 的表结构与索引定义、两个引擎相互对齐的查询模板、隔离运行的执行器、报告生成器，以及本文每张图背后的原始逐次采样数据——都在同一个公开仓库里：</p>
+
+  <p style="text-align:center;font-size:1.05rem"><a href="https://github.com/openobserve/openobserve-clickhouse-benchmark"><strong>github.com/openobserve/openobserve-clickhouse-benchmark</strong></a></p>
+
+  <p>其中也包括那些让基准测试可供辩论、而不仅仅可供引用的部分：每一侧哪些列建了索引、为什么这么建（<code>.env.example</code>、<code>schemas/clickhouse.sql</code>），每个引擎实际被要求执行的 SQL（<code>queries/queries.json</code>），以及每条查询、每个引擎、每一轮的全部 5 次原始采样（<code>data.generated.js</code>、<code>data.v2.js</code>）——因此这里的任何表格都可以重新算一遍，我们做的任何选择都可以改掉再跑一次。如果你复现之后得到了不同的结论，那也是有价值的结果：带上你的数字提个 issue。</p>
+
+  <div class="pull">
+    只报告总量的基准测试，会把第一轮称作 2.5 倍的胜利然后就此打住。那一轮真正有意思的数字，是那个<strong>拒绝变化的数字——六条不同的查询，全都是 96 毫秒</strong>——而它测的是文件数量，不是数据库。
+  </div>
+
+  <div class="footnote">
+    <strong>测试说明：</strong>
+    <ul>
+      <li>ClickHouse <code>26.7.3.19-stable</code>，<code>MergeTree ORDER BY (_timestamp)</code>，<code>index_granularity = 8192</code>；OpenObserve <code>v0.92.2</code>，两个实例之间只有 <code>ZO_FILE_FORMAT</code> 不同</li>
+      <li>每个后端一台独占的 <code>i8g.2xlarge</code>，数据在本地 NVMe 上，所有节点同时运行；查询测量一次只针对一个后端</li>
+      <li>第四台节点不在被测之列——一台 <code>c7g.2xlarge</code>——负责运行生成器和基准测试客户端</li>
+      <li>1,000,000,000 条记录 / 2,199 GB NDJSON，只序列化一次，以字节完全相同的形式在一次扇出写入中发往三个后端；只有当每个后端都接受了某个批次，该批次才算发送成功</li>
+      <li>查询窗口在两个引擎上都绝对固定为 2026-06-01 → 2027-06-01 UTC——比数据本身更宽，所以没有哪个引擎能拿到对方没有的时间裁剪优势</li>
+      <li>每条查询跑 5 次；每个后端节点在自己那一轮开始前清空操作系统页缓存，因此第 1 次是冷态；热态取 <code>min(run 2, run 3)</code>。<code>run-benchmark.py</code> 自己发出的那次 drop 落在压测机上，对被测引擎是空操作——真正让第 1 次成为冷态的是在后端节点上手动执行的那一步</li>
+      <li>两边的计时都由服务端上报：ClickHouse 用 <code>statistics.elapsed</code>，OpenObserve 用 <code>took</code>。OpenObserve 的精度是整毫秒，所以 30 毫秒以下的差异已经处在分辨率极限上</li>
+      <li>存储数字是压缩数据加索引，分别来自 <code>system.parts</code> + <code>system.data_skipping_indices</code> 和 OpenObserve 的 stream-stats API</li>
+      <li>写入耗时是一次同时写入三个后端的扇出过程，不是各引擎的写入性能基准</li>
+      <li><code>ZO_COMPACT_MAX_FILE_SIZE</code> 是合并期生效的设置——它改变合并产出的文件，对已经存在的文件不起任何作用，因此要么重新写入一遍数据，要么对已有数据强制跑一次重合并；只把这个值改掉再重启，什么也测不出来</li>
+      <li>各种倍数都做了取整——重点是数量级，不是小数位</li>
+      <li>全部内容——生成器、表结构、查询、执行器、报告生成器和原始采样——都公开在 <a href="https://github.com/openobserve/openobserve-clickhouse-benchmark">github.com/openobserve/openobserve-clickhouse-benchmark</a></li>
+      <li>两轮测试的交互式版本随仓库一起提供，分别是 <code>index.html</code>（2 GB）和 <code>index-v2.html</code>（10 GB）；原始逐次采样数据在 <code>data.generated.js</code> 和 <code>data.v2.js</code> 中</li>
+    </ul>
+  </div>
+
+</article>
+</body>
+</html>
